@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+.bg-aura-glow {
+  background: radial-gradient(
+    circle at 12% 15%,
+    rgba(245, 158, 11, 0.16) 0%,
+    rgba(202, 138, 4, 0.05) 30%,
+    rgba(7, 7, 7, 1) 70%
+  );
+}
+
+.card-top-highlight {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.06) 0%,
+    rgba(255, 255, 255, 0) 100%
+  );
+}
+
+.glow-yellow-sm {
+  box-shadow: 0 0 15px rgba(245, 158, 11, 0.25);
+}
+
+.glow-yellow-lg {
+  box-shadow: 0 0 30px rgba(245, 158, 11, 0.45);
+}
