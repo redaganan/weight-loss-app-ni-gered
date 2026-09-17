@@ -31,19 +31,25 @@ function buildEmptyAnalytics() {
   });
 }
 
+function getLocalDateKey(value = new Date()) {
+  const date = new Date(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function normalizeAnalytics(history = [], meals = [], weightLogs = [], profile = {}) {
   const points = buildEmptyAnalytics();
   const pointMap = new Map(points.map((point) => [point.dateKey, point]));
-  const fallbackWeight = Number(profile.weight || profile.startWeight || 0) || null;
-
   meals.forEach((meal) => {
-    const dateKey = new Date(meal.createdAt || meal.date || Date.now()).toISOString().slice(0, 10);
+    const dateKey = getLocalDateKey(meal.createdAt || meal.date || Date.now());
     const point = pointMap.get(dateKey);
     if (point) point.calories += Number(meal.calories) || 0;
   });
 
   weightLogs.forEach((log) => {
-    const dateKey = new Date(log.loggedAt || log.createdAt || Date.now()).toISOString().slice(0, 10);
+    const dateKey = log.loggedDate || getLocalDateKey(log.loggedAt || log.createdAt || Date.now());
     const point = pointMap.get(dateKey);
     if (point) point.weight = Number(log.weight) || point.weight;
   });
@@ -54,7 +60,7 @@ function normalizeAnalytics(history = [], meals = [], weightLogs = [], profile =
 
   history.forEach((entry) => {
     const date = entry.createdAt || entry.generatedAt || Date.now();
-    const dateKey = new Date(date).toISOString().slice(0, 10);
+    const dateKey = getLocalDateKey(date);
     const payload = entry.payload || {};
     const rhythm = Array.isArray(payload.weeklyRhythm) ? payload.weeklyRhythm : [];
     if (rhythm.length) {
@@ -73,10 +79,6 @@ function normalizeAnalytics(history = [], meals = [], weightLogs = [], profile =
     point.burned += Number(payload.caloriesBurned) || 0;
     const loggedWeight = Number(payload.currentWeight || payload.weight);
     if (loggedWeight > 0) point.weight = loggedWeight;
-  });
-
-  points.forEach((point) => {
-    if (point.weight === null) point.weight = fallbackWeight;
   });
 
   return points;
@@ -137,6 +139,8 @@ export default function DashboardPage({ onViewSetup }) {
   const [mealPlan, setMealPlan] = useState([]);
   const [error, setError] = useState('');
   const [analytics, setAnalytics] = useState(buildEmptyAnalytics);
+  const [weightTrend, setWeightTrend] = useState(buildEmptyAnalytics);
+  const [weightRange, setWeightRange] = useState('goal');
 
   const getProgressMetrics = (data = {}) => {
     const startWeight = Number(data.startWeight ?? data.weight ?? 0);
@@ -220,7 +224,7 @@ export default function DashboardPage({ onViewSetup }) {
 
     try {
       const { data } = await api.get(`/plan/${userId}`);
-      const analyticsResponse = await api.get(`/analytics/${userId}?range=7d`).catch((analyticsError) => {
+      const analyticsResponse = await api.get(`/analytics/${userId}?range=week&refresh=${Date.now()}`).catch((analyticsError) => {
         console.error('Unable to load analytics:', analyticsError);
         return { data: null };
       });
@@ -243,6 +247,7 @@ export default function DashboardPage({ onViewSetup }) {
           setUserData(parsed);
           setMealPlan(buildFallbackMealPlan(parsed));
           setAnalytics(normalizeAnalytics([], [], [], parsed));
+          setWeightTrend(normalizeAnalytics([], [], [], parsed));
           return;
         } catch (parseErr) {
           console.error('Unable to parse saved plan:', parseErr);
@@ -254,6 +259,17 @@ export default function DashboardPage({ onViewSetup }) {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    const userId = getStoredUserId();
+    if (!userId) return;
+
+    api.get(`/analytics/${userId}?range=${weightRange}&refresh=${Date.now()}`)
+      .then(({ data }) => {
+        if (Array.isArray(data?.days)) setWeightTrend(data.days);
+      })
+      .catch((weightError) => console.error('Unable to refresh weight trend:', weightError));
+  }, [weightRange]);
 
   useEffect(() => {
     const syncFromStorage = () => {
@@ -304,7 +320,9 @@ export default function DashboardPage({ onViewSetup }) {
   const bmiMetrics = getBmiMetrics(userData || {});
   const weeklyCaloriesConsumed = analytics.reduce((total, point) => total + point.calories, 0);
   const weeklyCaloriesBurned = analytics.reduce((total, point) => total + point.burned, 0);
-  const weeklyWorkouts = analytics.reduce((total, point) => total + point.workouts, 0);
+  const weeklyWorkouts = Array.isArray(userData?.weeklyRhythm)
+    ? userData.weeklyRhythm.filter((day) => day.completed).length
+    : 0;
 
   const handleLogWeight = async () => {
     const userId = getStoredUserId();
@@ -328,9 +346,13 @@ export default function DashboardPage({ onViewSetup }) {
         setUserData(savedProfile);
         localStorage.setItem('userPlanData', JSON.stringify(savedProfile));
         window.dispatchEvent(new CustomEvent('profile-updated'));
-        const analyticsResponse = await api.get(`/analytics/${userId}?range=7d`);
+        const analyticsResponse = await api.get(`/analytics/${userId}?range=week&refresh=${Date.now()}`);
         if (Array.isArray(analyticsResponse.data?.days)) {
           setAnalytics(analyticsResponse.data.days);
+        }
+        const weightResponse = await api.get(`/analytics/${userId}?range=${weightRange}&refresh=${Date.now()}`);
+        if (Array.isArray(weightResponse.data?.days)) {
+          setWeightTrend(weightResponse.data.days);
         }
         notify('Today’s weight was logged successfully.', 'success');
       }
@@ -517,14 +539,34 @@ export default function DashboardPage({ onViewSetup }) {
           <div className="mb-5 flex items-start justify-between gap-4">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.24em] text-amber-400">Analytics</p>
-              <h2 className="mt-2 text-xl font-bold text-slate-100">Weight trend</h2>
-              <p className="mt-1 text-sm text-slate-400">Your latest seven-day progress snapshot.</p>
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <h2 className="text-xl font-bold text-slate-100">Weight trend</h2>
+                <div className="flex rounded-lg border border-slate-700 bg-slate-950/60 p-1">
+                  {['goal', '7d', '30d', '90d'].map((range) => (
+                    <button
+                      key={range}
+                      type="button"
+                      onClick={() => setWeightRange(range)}
+                      className={`rounded-md px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition ${
+                        weightRange === range ? 'bg-amber-400 text-slate-950' : 'text-slate-400 hover:text-slate-100'
+                      }`}
+                    >
+                      {range === 'goal' ? 'Goal' : range}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="mt-1 text-sm text-slate-400">
+                {weightRange === 'goal'
+                ? `Actual progress through today · ${userData?.timelineWeeks || 8}-week goal target.`
+                  : `Actual weigh-ins across the selected ${weightRange === '7d' ? 'rolling 7-day' : weightRange === '30d' ? '30-day' : '90-day'} range.`}
+              </p>
             </div>
             <TrendingDown className="h-5 w-5 text-amber-400" />
           </div>
           <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={analytics} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+              <AreaChart data={weightTrend} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
                 <defs>
                   <linearGradient id="weightFill" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.42} />
@@ -532,10 +574,16 @@ export default function DashboardPage({ onViewSetup }) {
                   </linearGradient>
                 </defs>
                 <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="label" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
+                <XAxis
+                  dataKey="dateLabel"
+                  interval={weightRange === 'goal' ? 6 : weightRange === '90d' ? 13 : weightRange === '30d' ? 4 : 0}
+                  tick={{ fill: '#94a3b8', fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                />
                 <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} width={38} />
                 <Tooltip contentStyle={analyticsTooltipStyle} labelFormatter={(_, payload) => payload?.[0]?.payload?.dateLabel || ''} formatter={(value) => [`${value ?? '--'} kg`, 'Weight']} />
-                <Area type="monotone" dataKey="weight" stroke="#fbbf24" strokeWidth={3} fill="url(#weightFill)" connectNulls />
+                <Area type="monotone" dataKey="weight" stroke="#fbbf24" strokeWidth={3} fill="url(#weightFill)" connectNulls dot={{ r: 3, fill: '#fbbf24', strokeWidth: 0 }} activeDot={{ r: 5 }} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -545,8 +593,8 @@ export default function DashboardPage({ onViewSetup }) {
           <div className="mb-5 flex items-start justify-between gap-4">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.24em] text-amber-400">Weekly activity</p>
-              <h2 className="mt-2 text-xl font-bold text-slate-100">Calories & workouts</h2>
-              <p className="mt-1 text-sm text-slate-400">Logged activity from your recent records.</p>
+              <h2 className="mt-2 text-xl font-bold text-slate-100">Meal calories</h2>
+              <p className="mt-1 text-sm text-slate-400">Calories logged from meals, Monday to Sunday.</p>
             </div>
             <Flame className="h-5 w-5 text-amber-400" />
           </div>
@@ -556,9 +604,8 @@ export default function DashboardPage({ onViewSetup }) {
                 <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="label" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} width={38} />
-                <Tooltip contentStyle={analyticsTooltipStyle} labelFormatter={(_, payload) => payload?.[0]?.payload?.dateLabel || ''} />
+                <Tooltip contentStyle={analyticsTooltipStyle} labelFormatter={(_, payload) => payload?.[0]?.payload?.dateLabel || ''} formatter={(value) => [`${value ?? 0} kcal`, 'Meal calories']} />
                 <Bar dataKey="calories" name="Meal calories" fill="#f59e0b" radius={[5, 5, 0, 0]} />
-                <Bar dataKey="workouts" name="Workouts" fill="#fde047" radius={[5, 5, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -572,9 +619,9 @@ export default function DashboardPage({ onViewSetup }) {
           { label: 'Workouts logged', value: weeklyWorkouts, detail: 'Completed training sessions', tone: 'text-amber-400' },
           { label: 'Net balance', value: `${(weeklyCaloriesConsumed - weeklyCaloriesBurned).toLocaleString()} kcal`, detail: 'Consumed minus burned', tone: 'text-yellow-300' },
         ].map((metric) => (
-          <div key={metric.label} className="rounded-2xl border border-slate-800 bg-slate-900/90 p-5 shadow-xl">
+          <div key={metric.label} className="rounded-2xl border border-slate-800 bg-slate-900/90 p-4 shadow-xl">
             <p className="text-xs font-bold uppercase tracking-wider text-slate-400">{metric.label}</p>
-            <p className={`mt-3 text-2xl font-black ${metric.tone}`}>{metric.value}</p>
+            <p className={`mt-2 text-xl font-black ${metric.tone}`}>{metric.value}</p>
             <p className="mt-1 text-xs text-slate-500">{metric.detail}</p>
           </div>
         ))}

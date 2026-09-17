@@ -89,65 +89,46 @@ function OverviewPage() {
 }
 
 function MealsPage() {
-  const [history, setHistory] = useState([]);
-
-  useEffect(() => {
-    const saved = JSON.parse(localStorage.getItem('foodHistory') || '[]');
-    setHistory(saved.slice(0, 5));
-  }, []);
-
   return (
     <div className="space-y-8">
       <FoodScanPage />
-
-      <div className="rounded-2xl border border-slate-800 bg-slate-900/90 p-6 shadow-xl shadow-slate-950/40">
-        <div className="mb-5 flex items-center justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-amber-400">Meal tracker</p>
-            <h2 className="mt-2 text-2xl font-bold text-slate-100">Recent meals</h2>
-          </div>
-        </div>
-
-        {history.length > 0 ? (
-          <div className="space-y-3">
-            {history.map((item, index) => (
-              <div key={`${item.foodName}-${index}`} className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/50 p-4">
-                <div>
-                  <p className="font-semibold text-slate-100 capitalize">{item.foodName}</p>
-                  <p className="text-xs text-slate-400">{new Date(item.date).toLocaleDateString()}</p>
-                </div>
-                <div className="text-right">
-                  <p className="font-bold text-amber-400">{item.calories} kcal</p>
-                  <p className="text-xs text-slate-400">{item.protein}P / {item.carbs}C / {item.fat}F</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/40 p-6 text-center text-slate-400">
-            No scanned meals yet. Upload a food photo to build your recent meal history.
-          </div>
-        )}
-      </div>
     </div>
   );
 }
 
 function PlannerPage() {
   const defaultWeeklyPlan = [
-    { day: 'Monday', workoutFocus: 'Strength power', workout: 'Upper-body power circuit', meal: 'High-protein breakfast bowl', nutritionStrategy: 'Fuel with lean protein and hydration', status: 'On track', completed: false, missed: false },
-    { day: 'Tuesday', workoutFocus: 'Cardio burn', workout: 'HIIT intervals + sprint blocks', meal: 'Lean chicken power salad', nutritionStrategy: 'Keep carbs timed around training', status: 'On track', completed: false, missed: false },
-    { day: 'Wednesday', workoutFocus: 'Core stability', workout: 'Plank + anti-rotation sequence', meal: 'Salmon quinoa bowl', nutritionStrategy: 'Recovery-focused meal with omega-3s', status: 'Planned', completed: false, missed: false },
-    { day: 'Thursday', workoutFocus: 'Lower-body strength', workout: 'Leg drive + squat progression', meal: 'Greek yogurt protein bowl', nutritionStrategy: 'Prioritize protein and post-workout carbs', status: 'On track', completed: false, missed: false },
-    { day: 'Friday', workoutFocus: 'Conditioning', workout: 'Rowing or incline walk', meal: 'Turkey rice plate', nutritionStrategy: 'Balanced energy with steady protein', status: 'Planned', completed: false, missed: false },
-    { day: 'Saturday', workoutFocus: 'Recovery', workout: 'Mobility flow + light cardio', meal: 'Protein smoothie + oats', nutritionStrategy: 'Hydration and easy digestion', status: 'Planned', completed: false, missed: false },
-    { day: 'Sunday', workoutFocus: 'Reset', workout: 'Rest + walk + stretch routine', meal: 'Recovery dinner plate', nutritionStrategy: 'Light meal and consistent calories', status: 'Recovery', completed: false, missed: false },
+    { day: 'Monday', workoutFocus: 'Strength power', workout: 'Upper-body power circuit', repetitions: '3 sets × 10 reps', timeScope: '45 sec work / 30 sec transition', rest: '60 sec between sets', meal: 'High-protein breakfast bowl', nutritionStrategy: 'Fuel with lean protein and hydration', status: 'On track', completed: false, missed: false },
+    { day: 'Tuesday', workoutFocus: 'Cardio burn', workout: 'HIIT intervals + sprint blocks', repetitions: '8 rounds', timeScope: '30 sec sprint / 60 sec recovery', rest: '2 mins after every 4 rounds', meal: 'Lean chicken power salad', nutritionStrategy: 'Keep carbs timed around training', status: 'On track', completed: false, missed: false },
+    { day: 'Wednesday', workoutFocus: 'Core stability', workout: 'Plank + anti-rotation sequence', repetitions: '3 sets × 3 exercises', timeScope: '40 sec each exercise', rest: '30 sec between exercises', meal: 'Salmon quinoa bowl', nutritionStrategy: 'Recovery-focused meal with omega-3s', status: 'Planned', completed: false, missed: false },
+    { day: 'Thursday', workoutFocus: 'Lower-body strength', workout: 'Leg drive + squat progression', repetitions: '4 sets × 8 reps', timeScope: '3 sec lowering / controlled rise', rest: '90 sec between sets', meal: 'Greek yogurt protein bowl', nutritionStrategy: 'Prioritize protein and post-workout carbs', status: 'On track', completed: false, missed: false },
+    { day: 'Friday', workoutFocus: 'Conditioning', workout: 'Rowing or incline walk', repetitions: '5 rounds', timeScope: '4 mins effort / 2 mins easy pace', rest: '2 mins active recovery', meal: 'Turkey rice plate', nutritionStrategy: 'Balanced energy with steady protein', status: 'Planned', completed: false, missed: false },
+    { day: 'Saturday', workoutFocus: 'Recovery', workout: 'Mobility flow + light cardio', repetitions: '2 rounds', timeScope: '45 sec per movement', rest: '30 sec between movements', meal: 'Protein smoothie + oats', nutritionStrategy: 'Hydration and easy digestion', status: 'Planned', completed: false, missed: false },
+    { day: 'Sunday', workoutFocus: 'Reset', workout: 'Rest + walk + stretch routine', repetitions: '1 easy walk', timeScope: '20–30 mins easy pace', rest: 'As needed', meal: 'Recovery dinner plate', nutritionStrategy: 'Light meal and consistent calories', status: 'Recovery', completed: false, missed: false },
   ];
 
   const [weeklyPlan, setWeeklyPlan] = useState(defaultWeeklyPlan);
   const [editingIndex, setEditingIndex] = useState(null);
-  const [editDraft, setEditDraft] = useState({ workout: '', meal: '', workoutFocus: '', nutritionStrategy: '' });
+  const [completionIndex, setCompletionIndex] = useState(null);
+  const [completionDraft, setCompletionDraft] = useState({ repetitions: '', timeScope: '', rest: '', exercises: [] });
+  const [editDraft, setEditDraft] = useState({ workout: '', workoutFocus: '', nutritionStrategy: '', repetitions: '', timeScope: '', rest: '' });
   const weekDates = getCurrentWeekDates();
+  const getWorkoutDetails = (item, index) => {
+    const defaults = [
+      { repetitions: '3 sets × 10 reps', timeScope: '35 mins', rest: '60 sec between sets' },
+      { repetitions: '8 rounds', timeScope: '25 mins', rest: '60 sec recovery between rounds' },
+      { repetitions: '3 sets × 3 exercises', timeScope: '20 mins', rest: '30 sec between exercises' },
+      { repetitions: '4 sets × 8 reps', timeScope: '35 mins', rest: '90 sec between sets' },
+      { repetitions: '5 rounds', timeScope: '30 mins', rest: '2 mins active recovery' },
+      { repetitions: '2 rounds', timeScope: '20 mins', rest: '30 sec between movements' },
+      { repetitions: '1 easy walk', timeScope: '20 mins', rest: 'As needed' },
+    ][index] || { repetitions: '3 sets × 8 reps', timeScope: '30 mins', rest: '60 sec between sets' };
+    return {
+      repetitions: item.repetitions && !item.repetitions.startsWith('Follow') ? item.repetitions : defaults.repetitions,
+      timeScope: item.timeScope && !item.timeScope.startsWith('Complete') ? item.timeScope : defaults.timeScope,
+      rest: item.rest && item.rest !== 'Rest as needed' ? item.rest : defaults.rest,
+    };
+  };
 
   const persistPlan = async (nextPlan) => {
     const userId = getStoredUserId();
@@ -167,6 +148,7 @@ function PlannerPage() {
       const mergedProfile = { ...savedPlan, ...data.profile, weeklyRhythm: savedRhythm };
       localStorage.setItem('userPlanData', JSON.stringify(mergedProfile));
       window.dispatchEvent(new CustomEvent('planner-updated', { detail: savedRhythm }));
+      window.dispatchEvent(new CustomEvent('workout-logged', { detail: data.plannerCaloriesBurned || 0 }));
     } catch (error) {
       console.error('Unable to persist planner updates:', error);
       setWeeklyPlan(nextPlan);
@@ -202,19 +184,57 @@ function PlannerPage() {
     loadPlan();
   }, []);
 
-  const toggleDayCompletion = async (index) => {
+  const markDayMissed = async (index) => {
     const nextPlan = weeklyPlan.map((item, itemIndex) => {
       if (itemIndex !== index) return item;
-      const nextCompleted = !Boolean(item.completed);
       return {
         ...item,
-        completed: nextCompleted,
-        missed: !nextCompleted,
-        status: nextCompleted ? 'Completed' : 'Missed',
+        completed: false,
+        missed: true,
+        status: 'Missed',
       };
     });
 
     setWeeklyPlan(nextPlan);
+    await persistPlan(nextPlan);
+  };
+
+  const openCompletionForm = (index) => {
+    const item = weeklyPlan[index];
+    const workoutDetails = getWorkoutDetails(item, index);
+    const exercises = String(item.workout || item.workoutFocus || 'Workout')
+      .split(/\s*,\s*|\s+\+\s+/)
+      .map((exercise) => exercise.trim())
+      .filter(Boolean)
+      .map((exercise) => ({ exercise, performance: workoutDetails.repetitions }));
+    setCompletionIndex(index);
+    setCompletionDraft({
+      repetitions: workoutDetails.repetitions,
+      timeScope: workoutDetails.timeScope,
+      rest: workoutDetails.rest,
+      exercises,
+    });
+  };
+
+  const confirmDayCompletion = async () => {
+    if (completionIndex === null) return;
+    const nextPlan = weeklyPlan.map((item, index) => (
+      index === completionIndex
+        ? {
+            ...item,
+            completed: true,
+            missed: false,
+            status: 'Completed',
+            completedRepetitions: completionDraft.repetitions.trim(),
+            completedTimeScope: completionDraft.timeScope.trim(),
+            completedRest: completionDraft.rest.trim(),
+            completedExerciseDetails: completionDraft.exercises,
+          }
+        : item
+    ));
+
+    setWeeklyPlan(nextPlan);
+    setCompletionIndex(null);
     await persistPlan(nextPlan);
   };
 
@@ -225,15 +245,17 @@ function PlannerPage() {
       return {
         ...item,
         workout: editDraft.workout || item.workout,
-        meal: editDraft.meal || item.meal,
         workoutFocus: editDraft.workoutFocus || item.workoutFocus,
         nutritionStrategy: editDraft.nutritionStrategy || item.nutritionStrategy,
+        repetitions: editDraft.repetitions || item.repetitions,
+        timeScope: editDraft.timeScope || item.timeScope,
+        rest: editDraft.rest || item.rest,
       };
     });
 
     setWeeklyPlan(nextPlan);
     setEditingIndex(null);
-    setEditDraft({ workout: '', meal: '', workoutFocus: '', nutritionStrategy: '' });
+    setEditDraft({ workout: '', workoutFocus: '', nutritionStrategy: '', repetitions: '', timeScope: '', rest: '' });
     await persistPlan(nextPlan);
   };
 
@@ -246,6 +268,9 @@ function PlannerPage() {
             <h1 className="mt-2 text-3xl font-bold text-slate-100">Weekly rhythm</h1>
             <p className="mt-2 text-sm text-slate-400">
               {weekDates[0].shortDate} – {weekDates[6].shortDate} · Monday to Sunday
+            </p>
+            <p className="mt-2 text-xs text-amber-300">
+              Marking a workout complete automatically logs its estimated duration and calories burned.
             </p>
           </div>
           <button className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-300 hover:bg-amber-500/20">
@@ -266,6 +291,7 @@ function PlannerPage() {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {weekDates.map((date, index) => {
             const item = weeklyPlan[index] || { day: date.day };
+            const workoutDetails = getWorkoutDetails(item, index);
             return (
             <div key={`${item.day}-${index}`} className="rounded-2xl border border-slate-800 bg-slate-950/50 p-4">
               <div className="mb-3 flex items-center justify-between">
@@ -299,17 +325,14 @@ function PlannerPage() {
                     placeholder="Workout"
                   />
                   <input
-                    value={editDraft.meal || item.meal}
-                    onChange={(event) => setEditDraft((draft) => ({ ...draft, meal: event.target.value }))}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-slate-100 outline-none focus:border-amber-400"
-                    placeholder="Meal"
-                  />
-                  <input
                     value={editDraft.nutritionStrategy || item.nutritionStrategy}
                     onChange={(event) => setEditDraft((draft) => ({ ...draft, nutritionStrategy: event.target.value }))}
                     className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-slate-100 outline-none focus:border-amber-400"
                     placeholder="Nutrition strategy"
                   />
+                  <input value={editDraft.repetitions || item.repetitions || ''} onChange={(event) => setEditDraft((draft) => ({ ...draft, repetitions: event.target.value }))} className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-slate-100 outline-none focus:border-amber-400" placeholder="Sets and repetitions" />
+                  <input value={editDraft.timeScope || item.timeScope || item.duration || ''} onChange={(event) => setEditDraft((draft) => ({ ...draft, timeScope: event.target.value }))} className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-slate-100 outline-none focus:border-amber-400" placeholder="Time scope" />
+                  <input value={editDraft.rest || item.rest || ''} onChange={(event) => setEditDraft((draft) => ({ ...draft, rest: event.target.value }))} className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-slate-100 outline-none focus:border-amber-400" placeholder="Rest interval" />
                   <div className="flex gap-2">
                     <button onClick={handleEditSave} className="flex-1 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-300 px-3 py-2 text-xs font-bold text-slate-950">
                       Save
@@ -323,30 +346,39 @@ function PlannerPage() {
                 <div>
                   <div className="space-y-2 text-sm text-slate-300">
                     <p><span className="text-slate-400">Workout:</span> {item.workout || item.workoutFocus}</p>
-                    <p><span className="text-slate-400">Meal:</span> {item.meal}</p>
+                    <p><span className="text-slate-400">Repetitions:</span> {item.completedRepetitions || workoutDetails.repetitions}</p>
+                    <p><span className="text-slate-400">Time:</span> {item.completedTimeScope || workoutDetails.timeScope}</p>
+                    <p><span className="text-slate-400">Rest:</span> {item.completedRest || workoutDetails.rest}</p>
+                    {item.completed && (
+                      <p className="font-semibold text-yellow-300">
+                        Estimated burn: {item.caloriesBurned || 'Calculating'} kcal
+                      </p>
+                    )}
                     <p><span className="text-slate-400">Focus:</span> {item.workoutFocus || item.focus}</p>
                     <p><span className="text-slate-400">Nutrition:</span> {item.nutritionStrategy}</p>
                   </div>
 
                   <div className="mt-4 flex gap-2">
                     <button
-                      onClick={() => toggleDayCompletion(index)}
+                      onClick={() => (item.completed ? markDayMissed(index) : openCompletionForm(index))}
                       className={`flex-1 rounded-xl px-3 py-2 text-xs font-bold transition-all ${
                         item.completed
                           ? 'bg-red-500/10 text-red-300 hover:bg-red-500/20'
-                          : 'bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20'
+                          : 'bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'
                       }`}
                     >
-                      {item.completed ? 'Mark Missed' : 'Mark Completed'}
+                      {item.completed ? 'Mark Missed' : 'Complete + Log Calories'}
                     </button>
                     <button
                       onClick={() => {
                         setEditingIndex(index);
                         setEditDraft({
                           workout: item.workout || '',
-                          meal: item.meal || '',
                           workoutFocus: item.workoutFocus || '',
                           nutritionStrategy: item.nutritionStrategy || '',
+                          repetitions: workoutDetails.repetitions,
+                          timeScope: workoutDetails.timeScope,
+                          rest: workoutDetails.rest,
                         });
                       }}
                       className="flex-1 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700"
@@ -360,6 +392,78 @@ function PlannerPage() {
             );
           })}
         </div>
+
+        {completionIndex !== null && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-amber-400">Workout completed</p>
+              <h2 className="mt-2 text-2xl font-bold text-slate-100">
+                Log your actual workout
+              </h2>
+              <p className="mt-2 text-sm text-slate-400">
+                Enter what you actually did. We’ll use the time and workout details to register your estimated calories burned.
+              </p>
+              <div className="mt-5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-amber-300">Today’s workout</p>
+                <p className="mt-1 text-base font-bold text-slate-100">
+                  {weeklyPlan[completionIndex]?.workout || weeklyPlan[completionIndex]?.workoutFocus}
+                </p>
+                <div className="mt-3 space-y-2">
+                  {completionDraft.exercises.map((exercise, exerciseIndex) => (
+                    <div key={`${exercise.exercise}-${exerciseIndex}`}>
+                      <label className="mb-1 block text-xs text-slate-400">{exercise.exercise}</label>
+                      <input
+                        value={exercise.performance}
+                        onChange={(event) => setCompletionDraft((draft) => ({
+                          ...draft,
+                          exercises: draft.exercises.map((entry, entryIndex) => (
+                            entryIndex === exerciseIndex ? { ...entry, performance: event.target.value } : entry
+                          )),
+                        }))}
+                        className="w-full rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-slate-100 outline-none focus:ring-2 focus:ring-amber-500"
+                        placeholder="Actual sets and reps"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="mt-5 space-y-3">
+                <input
+                  value={completionDraft.repetitions}
+                  onChange={(event) => setCompletionDraft((draft) => ({ ...draft, repetitions: event.target.value }))}
+                  className="w-full rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-slate-100 outline-none focus:ring-2 focus:ring-amber-500"
+                  placeholder="Actual sets and repetitions (e.g. 3 sets × 8 reps)"
+                />
+                <input
+                  value={completionDraft.timeScope}
+                  onChange={(event) => setCompletionDraft((draft) => ({ ...draft, timeScope: event.target.value }))}
+                  className="w-full rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-slate-100 outline-none focus:ring-2 focus:ring-amber-500"
+                  placeholder="Actual duration (e.g. 35 mins)"
+                />
+                <input
+                  value={completionDraft.rest}
+                  onChange={(event) => setCompletionDraft((draft) => ({ ...draft, rest: event.target.value }))}
+                  className="w-full rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-slate-100 outline-none focus:ring-2 focus:ring-amber-500"
+                  placeholder="Rest taken (e.g. 60 sec between sets)"
+                />
+              </div>
+              <div className="mt-5 flex gap-3">
+                <button
+                  onClick={confirmDayCompletion}
+                  className="flex-1 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-300 px-4 py-2.5 font-bold text-slate-950"
+                >
+                  Save + Log Calories
+                </button>
+                <button
+                  onClick={() => setCompletionIndex(null)}
+                  className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 font-semibold text-slate-200"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

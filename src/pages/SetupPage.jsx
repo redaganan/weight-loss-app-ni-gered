@@ -25,8 +25,21 @@ export default function SetupPage({ onViewDashboard, onViewSetup, isProfileEdit 
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const savedProfile = localStorage.getItem('userPlanData');
-      const savedUserId = getStoredUserId();
-      setHasSavedPlan(Boolean(savedProfile || savedUserId));
+      const savedUser = localStorage.getItem('user');
+      setHasSavedPlan(Boolean(savedProfile));
+
+      if (savedUser) {
+        try {
+          const parsedUser = JSON.parse(savedUser);
+          setFormData((prev) => ({
+            ...prev,
+            name: parsedUser.name || prev.name,
+            email: parsedUser.email || prev.email,
+          }));
+        } catch (error) {
+          console.error('Unable to parse saved account:', error);
+        }
+      }
 
       if (savedProfile) {
         try {

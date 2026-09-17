@@ -4,7 +4,7 @@ import { Menu, X } from 'lucide-react';
 import UserMenu from './UserMenu';
 
 const tabs = [
-  { name: 'Overview', path: '/' },
+  { name: 'Dashboard', path: '/' },
   { name: 'Workouts', path: '/workouts' },
   { name: 'Meals', path: '/meals' },
   { name: 'Planner', path: '/planner' },

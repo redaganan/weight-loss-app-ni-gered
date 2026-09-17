@@ -1,5 +1,7 @@
 const express = require('express');
+const crypto = require('crypto');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { OAuth2Client } = require('google-auth-library');
 const bcrypt = require('bcryptjs');
 const router = express.Router();
 const UserAccount = require('../models/UserAccount');
@@ -8,7 +10,17 @@ const Exercise = require('../models/Exercise');
 const Meal = require('../models/Meal');
 const RecommendationHistory = require('../models/RecommendationHistory');
 const WeightLog = require('../models/WeightLog');
+const AuthOtp = require('../models/AuthOtp');
+const { createOtp, hashOtp, sendOtpEmail } = require('../services/authEmail');
 const { createToken, requireAuth, requireUserMatch } = require('../middleware/auth');
+
+function createOtpToken(email, purpose) {
+  return require('jsonwebtoken').sign(
+    { email: String(email).toLowerCase(), purpose, verified: true },
+    process.env.JWT_SECRET,
+    { expiresIn: '15m' },
+  );
+}
 
 function calculateMacros(profile) {
   const weight = Number(profile.weight) || 70;
@@ -57,16 +69,110 @@ function calculateProgress(profile) {
   return Number(Math.min(100, Math.max(0, ratio * 100)).toFixed(1));
 }
 
+function getManilaDateKey(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(date));
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function getManilaDateStart(dateKey) {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day) - (8 * 60 * 60 * 1000));
+}
+
+function getPlannerDateKey(dayName, referenceDate = new Date()) {
+  const dayIndex = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+    .indexOf(String(dayName || '').toLowerCase());
+  if (dayIndex < 0) return getManilaDateKey(referenceDate);
+
+  const todayKey = getManilaDateKey(referenceDate);
+  const [year, month, day] = todayKey.split('-').map(Number);
+  const todayUtc = new Date(Date.UTC(year, month - 1, day));
+  const mondayOffset = todayUtc.getUTCDay() === 0 ? -6 : 1 - todayUtc.getUTCDay();
+  const monday = new Date(todayUtc);
+  monday.setUTCDate(monday.getUTCDate() + mondayOffset + dayIndex);
+  return `${monday.getUTCFullYear()}-${String(monday.getUTCMonth() + 1).padStart(2, '0')}-${String(monday.getUTCDate()).padStart(2, '0')}`;
+}
+
+function parseDurationMinutes(item) {
+  const source = String(item?.duration || item?.timeScope || '');
+  const match = source.match(/\d+(?:\.\d+)?/);
+  const minutes = match ? Number(match[0]) : 30;
+  return source.toLowerCase().includes('sec') && !source.toLowerCase().includes('min')
+    ? Math.max(10, Math.round(minutes / 2))
+    : Math.min(360, Math.max(10, Math.round(minutes)));
+}
+
+function parseWorkoutVolume(value) {
+  const text = String(value || '').toLowerCase();
+  const sets = Number(text.match(/(\d+(?:\.\d+)?)\s*(?:sets?|rounds?)/)?.[1]) || 1;
+  const reps = Number(text.match(/(?:x|×)\s*(\d+(?:\.\d+)?)\s*reps?/)?.[1])
+    || Number(text.match(/(\d+(?:\.\d+)?)\s*reps?/)?.[1])
+    || 1;
+  return sets * reps;
+}
+
+function estimatePlannerCalories(profile, item) {
+  const weight = Number(profile?.weight) || 70;
+  const focus = `${item?.workoutFocus || ''} ${item?.workout || ''}`.toLowerCase();
+  const met = focus.includes('hiit') || focus.includes('sprint') ? 8.5
+    : focus.includes('strength') || focus.includes('power') ? 6
+      : focus.includes('rest') || focus.includes('recovery') || focus.includes('walk') ? 3.5
+        : 6;
+  const durationMinutes = parseDurationMinutes({
+    ...item,
+    timeScope: item?.completedTimeScope || item?.timeScope,
+  });
+  const exerciseDetails = Array.isArray(item?.completedExerciseDetails) && item.completedExerciseDetails.length
+    ? item.completedExerciseDetails
+    : [{ performance: item?.completedRepetitions || item?.repetitions }];
+  const actualVolume = exerciseDetails.reduce((total, exercise) => total + parseWorkoutVolume(exercise.performance), 0);
+  const plannedDetails = Array.isArray(item?.exerciseDetails) && item.exerciseDetails.length
+    ? item.exerciseDetails
+    : String(item?.workout || '').split(/\s*,\s*|\s+\+\s+/)
+      .filter(Boolean)
+      .map(() => ({ performance: item?.repetitions }));
+  const plannedVolume = plannedDetails.reduce((total, exercise) => total + parseWorkoutVolume(exercise.performance), 0);
+  const volumeFactor = Math.min(1.25, Math.max(0.35, actualVolume / Math.max(plannedVolume, 1)));
+  return {
+    durationMinutes,
+    caloriesBurned: Math.round(((met * 3.5 * weight * durationMinutes) / 200) * volumeFactor),
+  };
+}
+
+function getPlannerDetails(index, item = {}) {
+  const defaults = [
+    { repetitions: '3 sets × 10 reps', timeScope: '35 mins', rest: '60 sec between sets' },
+    { repetitions: '8 rounds', timeScope: '25 mins', rest: '60 sec recovery between rounds' },
+    { repetitions: '3 sets × 3 exercises', timeScope: '20 mins', rest: '30 sec between exercises' },
+    { repetitions: '4 sets × 8 reps', timeScope: '35 mins', rest: '90 sec between sets' },
+    { repetitions: '5 rounds', timeScope: '30 mins', rest: '2 mins active recovery' },
+    { repetitions: '2 rounds', timeScope: '20 mins', rest: '30 sec between movements' },
+    { repetitions: '1 easy walk', timeScope: '20 mins', rest: 'As needed' },
+  ][index] || { repetitions: '3 sets × 8 reps', timeScope: '30 mins', rest: '60 sec between sets' };
+
+  return {
+    repetitions: item.repetitions && !item.repetitions.startsWith('Follow') ? item.repetitions : defaults.repetitions,
+    timeScope: item.timeScope && !item.timeScope.startsWith('Complete') ? item.timeScope : defaults.timeScope,
+    rest: item.rest && item.rest !== 'Rest as needed' ? item.rest : defaults.rest,
+  };
+}
+
 function buildWeeklyRhythm(profile, mealPlan = []) {
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
   const workoutTemplates = [
-    { focus: 'Strength power', workout: 'Upper-body power circuit', duration: '35 mins' },
-    { focus: 'Cardio burn', workout: 'HIIT intervals + sprint blocks', duration: '25 mins' },
-    { focus: 'Core stability', workout: 'Plank + anti-rotation sequence', duration: '20 mins' },
-    { focus: 'Lower-body strength', workout: 'Leg drive + squat progression', duration: '35 mins' },
-    { focus: 'Conditioning', workout: 'Rowing or brisk incline walk', duration: '30 mins' },
-    { focus: 'Recovery', workout: 'Mobility flow + light cardio', duration: '20 mins' },
-    { focus: 'Reset', workout: 'Rest + walk + stretch routine', duration: 'Optional' },
+    { focus: 'Strength power', workout: 'Upper-body power circuit', duration: '35 mins', repetitions: '3 sets × 10 reps', timeScope: '45 sec work / 30 sec transition', rest: '60 sec between sets' },
+    { focus: 'Cardio burn', workout: 'HIIT intervals + sprint blocks', duration: '25 mins', repetitions: '8 rounds', timeScope: '30 sec sprint / 60 sec recovery', rest: '2 mins after every 4 rounds' },
+    { focus: 'Core stability', workout: 'Plank + anti-rotation sequence', duration: '20 mins', repetitions: '3 sets × 3 exercises', timeScope: '40 sec each exercise', rest: '30 sec between exercises' },
+    { focus: 'Lower-body strength', workout: 'Leg drive + squat progression', duration: '35 mins', repetitions: '4 sets × 8 reps', timeScope: '3 sec lowering / controlled rise', rest: '90 sec between sets' },
+    { focus: 'Conditioning', workout: 'Rowing or brisk incline walk', duration: '30 mins', repetitions: '5 rounds', timeScope: '4 mins effort / 2 mins easy pace', rest: '2 mins active recovery' },
+    { focus: 'Recovery', workout: 'Mobility flow + light cardio', duration: '20 mins', repetitions: '2 rounds', timeScope: '45 sec per movement', rest: '30 sec between movements' },
+    { focus: 'Reset', workout: 'Rest + walk + stretch routine', duration: 'Optional', repetitions: '1 easy walk', timeScope: '20–30 mins easy pace', rest: 'As needed' },
   ];
 
   return days.map((day, index) => {
@@ -80,6 +186,9 @@ function buildWeeklyRhythm(profile, mealPlan = []) {
       workoutFocus: workoutTemplates[index].focus,
       workout: workoutTemplates[index].workout,
       duration: workoutTemplates[index].duration,
+      repetitions: workoutTemplates[index].repetitions,
+      timeScope: workoutTemplates[index].timeScope,
+      rest: workoutTemplates[index].rest,
       meal: meal.name,
       nutritionStrategy: `${profile?.dietPreference || 'balanced'} nutrition focus with ${meal.name} and steady hydration for recovery.`,
       status: index === 6 ? 'Recovery' : index >= 4 ? 'Planned' : 'On track',
@@ -206,7 +315,7 @@ const prompt = `You are a health and fitness coach. Return ONLY valid JSON with 
   "summary": "string",
   "mealPlan": [{"type":"Breakfast|Lunch|Snack|Dinner","name":"string","description":"string","calories":number,"protein":number,"carbs":number,"fat":number,"instructions":"string"}],
   "workoutPlan": [{"day":"string","focus":"string","workout":"string","duration":"string"}],
-  "weeklyRhythm": [{"day":"string","workoutFocus":"string","workout":"string","duration":"string","meal":"string","nutritionStrategy":"string","status":"string"}]
+  "weeklyRhythm": [{"day":"string","workoutFocus":"string","workout":"string","duration":"string","repetitions":"string","timeScope":"string","rest":"string","meal":"string","nutritionStrategy":"string","status":"string"}]
 }
 Profile details:
 name=${profile?.name || 'Athlete'}
@@ -234,11 +343,21 @@ if (parsed && Array.isArray(parsed.mealPlan) && Array.isArray(parsed.workoutPlan
   const normalizedWeeklyRhythm = Array.isArray(parsed.weeklyRhythm) && parsed.weeklyRhythm.length
     ? parsed.weeklyRhythm
     : buildWeeklyRhythm(profile, parsed.mealPlan);
+  const completeWeeklyRhythm = normalizedWeeklyRhythm.map((item, index) => {
+    const template = buildWeeklyRhythm(profile, parsed.mealPlan)[index] || {};
+    return {
+      ...template,
+      ...item,
+      repetitions: item.repetitions || template.repetitions,
+      timeScope: item.timeScope || template.timeScope,
+      rest: item.rest || template.rest,
+    };
+  });
 
   return {
     mealPlan: parsed.mealPlan,
     workoutPlan: parsed.workoutPlan,
-    weeklyRhythm: normalizedWeeklyRhythm,
+    weeklyRhythm: completeWeeklyRhythm,
     summary: parsed.summary || 'AI-generated custom plan.',
     source: 'gemini',
   };
@@ -336,6 +455,12 @@ router.post('/user/setup', async (req, res) => {
 
     let userAccount = existingUser;
     if (!userAccount) {
+      try {
+        const verified = require('jsonwebtoken').verify(account.otpToken, process.env.JWT_SECRET);
+        if (verified.email !== String(account.email).toLowerCase() || verified.purpose !== 'register') throw new Error('invalid');
+      } catch {
+        return res.status(401).json({ message: 'Verify your email before creating an account.' });
+      }
       const password = account.password || account.passwordHash;
       if (!password || String(password).length < 8) {
         return res.status(400).json({ message: 'A password with at least 8 characters is required.' });
@@ -385,7 +510,14 @@ router.post('/user/setup', async (req, res) => {
 });
 
 router.use((req, res, next) => {
-  if (req.path === '/auth/login' || req.path === '/user/setup') {
+  if (
+    req.path === '/auth/login'
+    || req.path === '/auth/request-otp'
+    || req.path === '/auth/verify-otp'
+    || req.path === '/auth/register'
+    || req.path === '/auth/google'
+    || req.path === '/user/setup'
+  ) {
     return next();
   }
   return requireAuth(req, res, next);
@@ -546,6 +678,10 @@ router.post('/user/planner/save', requireUserMatch, async (req, res) => {
           completed: Boolean(item.completed),
           missed: Boolean(item.missed),
           status: item.completed ? 'Completed' : item.missed ? 'Missed' : (item.status || 'Planned'),
+          ...getPlannerDetails(index, item),
+          ...(item.completed
+            ? { caloriesBurned: estimatePlannerCalories(profileDoc, item).caloriesBurned }
+            : {}),
         }))
       : profileDoc.weeklyRhythm || [];
 
@@ -568,6 +704,53 @@ router.post('/user/planner/save', requireUserMatch, async (req, res) => {
       { new: true },
     );
 
+    let plannerCaloriesBurned = 0;
+    for (const item of normalizedRhythm) {
+      const scheduledDate = getPlannerDateKey(item.day);
+      if (!item.completed) {
+        await RecommendationHistory.deleteOne({
+          userAccount: userId,
+          type: 'workout_log',
+          'payload.source': 'planner_completion',
+          'payload.scheduledDate': scheduledDate,
+        });
+        continue;
+      }
+
+      const workoutDetails = estimatePlannerCalories(updatedProfile, item);
+      plannerCaloriesBurned += workoutDetails.caloriesBurned;
+      const workoutPayload = {
+        source: 'planner_completion',
+        exerciseName: item.workout || item.workoutFocus || 'Planner workout',
+        workoutDay: item.day,
+        scheduledDate,
+        repetitions: item.completedRepetitions || item.repetitions,
+        exerciseDetails: item.completedExerciseDetails || [],
+        rest: item.completedRest || item.rest,
+        durationMinutes: workoutDetails.durationMinutes,
+        intensity: 'planner',
+        caloriesBurned: workoutDetails.caloriesBurned,
+        loggedAt: new Date().toISOString(),
+      };
+      const existingLog = await RecommendationHistory.findOne({
+        userAccount: userId,
+        type: 'workout_log',
+        'payload.source': 'planner_completion',
+        'payload.scheduledDate': scheduledDate,
+      });
+
+      if (!existingLog) {
+        await RecommendationHistory.create({
+          userAccount: userId,
+          type: 'workout_log',
+          payload: workoutPayload,
+        });
+      } else {
+        existingLog.payload = workoutPayload;
+        await existingLog.save();
+      }
+    }
+
     await RecommendationHistory.create({
       userAccount: userId,
       type: 'workout_log',
@@ -580,6 +763,7 @@ router.post('/user/planner/save', requireUserMatch, async (req, res) => {
 
     res.json({
       message: 'Planner and weight updates saved successfully',
+      plannerCaloriesBurned,
       profile: updatedProfile,
       weeklyRhythm: updatedProfile.weeklyRhythm,
       progress: calculateProgress(updatedProfile.toObject()),
@@ -607,6 +791,7 @@ router.post('/weight-logs', requireUserMatch, async (req, res) => {
     const weightLog = await WeightLog.create({
       userAccount,
       weight: numericWeight,
+      loggedDate: getManilaDateKey(),
     });
 
     profile.weight = numericWeight;
@@ -620,6 +805,7 @@ router.post('/weight-logs', requireUserMatch, async (req, res) => {
         weight: numericWeight,
         currentWeight: numericWeight,
         loggedAt: weightLog.loggedAt.toISOString(),
+        loggedDate: weightLog.loggedDate,
       },
     });
 
@@ -650,18 +836,36 @@ router.get('/weight-logs/:userId', requireUserMatch, async (req, res) => {
 
 router.get('/analytics/:userId', requireUserMatch, async (req, res) => {
   try {
-    const allowedRanges = { '7d': 7, '30d': 30, '90d': 90 };
-    const range = allowedRanges[req.query.range] ? req.query.range : '7d';
-    const days = allowedRanges[range];
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    const allowedRanges = { week: 7, '7d': 7, '30d': 30, '90d': 90 };
+    const range = req.query.range === 'goal'
+      ? 'goal'
+      : (allowedRanges[req.query.range] ? req.query.range : 'week');
     const profile = await UserProfile.findOne({ userAccount: req.params.userId }).lean();
     if (!profile) return res.status(404).json({ message: 'Profile not found for this user.' });
+    const account = await UserAccount.findById(req.params.userId).select('createdAt').lean();
+    const goalDurationDays = Math.max(7, Math.min(365, Number(profile.timelineWeeks || 8) * 7));
+    let days = range === 'goal' ? goalDurationDays : allowedRanges[range];
 
-    const startDate = new Date();
-    startDate.setUTCHours(0, 0, 0, 0);
-    if (range === '7d') {
-      const mondayOffset = (startDate.getUTCDay() + 6) % 7;
-      startDate.setUTCDate(startDate.getUTCDate() - mondayOffset);
-    } else {
+    const todayKey = getManilaDateKey();
+    const todayDate = getManilaDateStart(todayKey);
+    const accountStartKey = range === 'goal' && account?.createdAt
+      ? getManilaDateKey(account.createdAt)
+      : null;
+    const goalStartKey = accountStartKey;
+    const startDate = goalStartKey
+      ? getManilaDateStart(goalStartKey)
+      : new Date(todayDate);
+    if (range === 'week') {
+      const [year, month, day] = todayKey.split('-').map(Number);
+      const calendarDate = new Date(Date.UTC(year, month - 1, day));
+      const mondayOffset = calendarDate.getUTCDay() === 0 ? -6 : 1 - calendarDate.getUTCDay();
+      calendarDate.setUTCDate(calendarDate.getUTCDate() + mondayOffset);
+      const mondayKey = `${calendarDate.getUTCFullYear()}-${String(calendarDate.getUTCMonth() + 1).padStart(2, '0')}-${String(calendarDate.getUTCDate()).padStart(2, '0')}`;
+      startDate.setTime(getManilaDateStart(mondayKey).getTime());
+    } else if (range !== 'goal') {
       startDate.setUTCDate(startDate.getUTCDate() - (days - 1));
     }
 
@@ -672,17 +876,25 @@ router.get('/analytics/:userId', requireUserMatch, async (req, res) => {
         type: 'workout_log',
         createdAt: { $gte: startDate },
       }).lean(),
-      WeightLog.find({ userAccount: req.params.userId, loggedAt: { $gte: startDate } }).sort({ loggedAt: 1 }).lean(),
+      WeightLog.find({
+        userAccount: req.params.userId,
+        $or: [
+          { loggedAt: { $gte: startDate } },
+          ...(goalStartKey ? [{ loggedDate: { $gte: goalStartKey } }] : []),
+        ],
+      }).sort({ loggedAt: 1 }).lean(),
     ]);
 
     const points = Array.from({ length: days }, (_, index) => {
       const date = new Date(startDate);
       date.setUTCDate(startDate.getUTCDate() + index);
-      const dateKey = date.toISOString().slice(0, 10);
+      const dateKey = getManilaDateKey(date);
+      const [pointYear, pointMonth, pointDay] = dateKey.split('-').map(Number);
+      const calendarDate = new Date(Date.UTC(pointYear, pointMonth - 1, pointDay));
       return {
         dateKey,
-        label: date.toLocaleDateString('en-US', { weekday: 'short' }),
-        dateLabel: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }),
+        label: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][calendarDate.getUTCDay()],
+        dateLabel: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'Asia/Manila' }),
         calories: 0,
         burned: 0,
         workouts: 0,
@@ -690,7 +902,7 @@ router.get('/analytics/:userId', requireUserMatch, async (req, res) => {
       };
     });
     const pointMap = new Map(points.map((point) => [point.dateKey, point]));
-    const getPoint = (date) => pointMap.get(new Date(date).toISOString().slice(0, 10));
+    const getPoint = (date) => pointMap.get(getManilaDateKey(date));
 
     meals.forEach((meal) => {
       const point = getPoint(meal.createdAt || meal.date);
@@ -714,22 +926,32 @@ router.get('/analytics/:userId', requireUserMatch, async (req, res) => {
     workouts
       .filter((entry) => !Array.isArray(entry.payload?.weeklyRhythm))
       .forEach((entry) => {
-        const point = getPoint(entry.createdAt || entry.generatedAt);
+        const point = getPoint(entry.payload?.scheduledDate || entry.createdAt || entry.generatedAt);
         if (point) {
           point.workouts += 1;
           point.burned += Number(entry.payload?.caloriesBurned) || 0;
         }
       });
+    const latestWeightByDate = new Map();
     weightLogs.forEach((log) => {
-      const point = getPoint(log.loggedAt || log.createdAt);
+      const dateKey = log.loggedDate || getManilaDateKey(log.loggedAt || log.createdAt);
+      const existing = latestWeightByDate.get(dateKey);
+      if (!existing || new Date(log.loggedAt || log.createdAt) > new Date(existing.loggedAt || existing.createdAt)) {
+        latestWeightByDate.set(dateKey, log);
+      }
+    });
+    latestWeightByDate.forEach((log, dateKey) => {
+      if (goalStartKey && dateKey === goalStartKey) return;
+      const point = pointMap.get(dateKey);
       if (point) point.weight = Number(log.weight) || null;
     });
-
-    let latestWeight = Number(profile.startWeight || profile.weight) || null;
-    points.forEach((point) => {
-      if (point.weight === null) point.weight = latestWeight;
-      else latestWeight = point.weight;
-    });
+    if (goalStartKey && range === 'goal') {
+      const startPoint = pointMap.get(goalStartKey);
+      const startingWeight = Number(profile.startWeight || profile.weight);
+      if (startPoint && Number.isFinite(startingWeight) && startingWeight > 0) {
+        startPoint.weight = startingWeight;
+      }
+    }
 
     const caloriesConsumed = points.reduce((total, point) => total + point.calories, 0);
     const caloriesBurned = points.reduce((total, point) => total + point.burned, 0);
@@ -741,7 +963,7 @@ router.get('/analytics/:userId', requireUserMatch, async (req, res) => {
         caloriesBurned,
         netCalories: caloriesConsumed - caloriesBurned,
         workouts: points.reduce((total, point) => total + point.workouts, 0),
-        weight: Number(profile.weight) || latestWeight,
+        weight: Number(profile.weight) || null,
       },
       profile,
     });
@@ -868,6 +1090,135 @@ router.get('/meals/:userId', requireUserMatch, async (req, res) => {
   } catch (error) {
     console.error('meal fetch error:', error);
     res.status(500).json({ message: 'Failed to fetch meals', error: error.message });
+  }
+});
+
+router.post('/auth/request-otp', async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const purpose = req.body?.purpose === 'register' ? 'register' : 'login';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ message: 'A valid email address is required.' });
+    }
+
+    const account = await UserAccount.findOne({ email }).select('_id').lean();
+    if (purpose === 'login' && !account) {
+      return res.status(401).json({ message: 'Invalid email or password.' });
+    }
+    if (purpose === 'login') {
+      const fullAccount = await UserAccount.findById(account._id).select('passwordHash');
+      const storedPassword = String(fullAccount.passwordHash || '');
+      const isValid = storedPassword.startsWith('$2')
+        ? await bcrypt.compare(String(req.body?.password || ''), storedPassword)
+        : storedPassword === String(req.body?.password || '');
+      if (!isValid) return res.status(401).json({ message: 'Invalid email or password.' });
+    }
+    if (purpose === 'register' && account) {
+      return res.status(409).json({ message: 'An account with this email already exists.' });
+    }
+
+    const code = createOtp();
+    await AuthOtp.deleteMany({ email, purpose });
+    await AuthOtp.create({
+      email,
+      purpose,
+      codeHash: hashOtp(code),
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    });
+    await sendOtpEmail(email, code, purpose);
+    return res.json({ message: 'Verification code sent.' });
+  } catch (error) {
+    console.error('OTP request error:', error);
+    return res.status(500).json({ message: 'Unable to send the verification code.', error: error.message });
+  }
+});
+
+router.post('/auth/verify-otp', async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const code = String(req.body?.code || '').trim();
+    const purpose = req.body?.purpose === 'register' ? 'register' : 'login';
+    const otp = await AuthOtp.findOne({ email, purpose });
+    if (!otp || otp.expiresAt < new Date() || otp.attempts >= 5) {
+      return res.status(401).json({ message: 'That code is invalid or expired.' });
+    }
+    if (hashOtp(code) !== otp.codeHash) {
+      otp.attempts += 1;
+      await otp.save();
+      return res.status(401).json({ message: 'That code is invalid or expired.' });
+    }
+
+    await AuthOtp.deleteOne({ _id: otp._id });
+    if (purpose === 'register') {
+      return res.json({ message: 'Email verified.', otpToken: createOtpToken(email, purpose) });
+    }
+
+    const account = await UserAccount.findOne({ email });
+    const token = createToken(account._id);
+    return res.json({
+      message: 'Login successful',
+      token,
+      user: { _id: account._id, email: account.email, name: account.name, token },
+    });
+  } catch (error) {
+    console.error('OTP verification error:', error);
+    return res.status(500).json({ message: 'Unable to verify the code.', error: error.message });
+  }
+});
+
+router.post('/auth/register', async (req, res) => {
+  try {
+    const { name, email, password, otpToken } = req.body || {};
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const verified = require('jsonwebtoken').verify(otpToken, process.env.JWT_SECRET);
+    if (verified.email !== normalizedEmail || verified.purpose !== 'register') {
+      return res.status(401).json({ message: 'Verify your email before creating an account.' });
+    }
+    if (!name || !password || String(password).length < 8) {
+      return res.status(400).json({ message: 'Name and a password with at least 8 characters are required.' });
+    }
+    if (await UserAccount.exists({ email: normalizedEmail })) {
+      return res.status(409).json({ message: 'An account with this email already exists.' });
+    }
+
+    const account = await UserAccount.create({
+      name: String(name).trim(),
+      email: normalizedEmail,
+      passwordHash: await bcrypt.hash(String(password), 12),
+    });
+    const token = createToken(account._id);
+    return res.status(201).json({
+      message: 'Account created. Complete your fitness plan setup.',
+      token,
+      user: { _id: account._id, email: account.email, name: account.name, token },
+    });
+  } catch (error) {
+    console.error('registration error:', error);
+    return res.status(400).json({ message: 'Unable to create the account. Verify your code and try again.' });
+  }
+});
+
+router.post('/auth/google', async (req, res) => {
+  try {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    if (!clientId) return res.status(503).json({ message: 'Google sign-in is not configured yet.' });
+    const credential = String(req.body?.credential || '');
+    const ticket = await new OAuth2Client(clientId).verifyIdToken({ idToken: credential, audience: clientId });
+    const payload = ticket.getPayload();
+    if (!payload?.email || !payload.email_verified) return res.status(401).json({ message: 'Google email verification is required.' });
+    let account = await UserAccount.findOne({ email: payload.email.toLowerCase() });
+    if (!account) {
+      account = await UserAccount.create({
+        email: payload.email.toLowerCase(),
+        name: payload.name || payload.email.split('@')[0],
+        passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12),
+      });
+    }
+    const token = createToken(account._id);
+    return res.json({ message: 'Google sign-in successful', token, user: { _id: account._id, email: account.email, name: account.name, token } });
+  } catch (error) {
+    console.error('Google sign-in error:', error);
+    return res.status(401).json({ message: 'Google sign-in could not be verified.' });
   }
 });
 
