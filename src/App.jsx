@@ -475,6 +475,21 @@ function HistoryPage() {
   const [weightLogs, setWeightLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [progressData, setProgressData] = useState({ percent: 0, streak: 0, currentWeight: 0, goalWeight: 0 });
+  const [removingWorkout, setRemovingWorkout] = useState('');
+
+  const removeWorkoutLog = async (entryId) => {
+    if (!window.confirm('Remove this workout log and its calories burned?')) return;
+    setRemovingWorkout(entryId);
+    try {
+      await api.delete(`/workouts/${entryId}`);
+      setActivityHistory((entries) => entries.filter((entry) => entry._id !== entryId));
+      window.dispatchEvent(new CustomEvent('workout-logged'));
+    } catch (error) {
+      console.error('Unable to remove workout log:', error);
+    } finally {
+      setRemovingWorkout('');
+    }
+  };
 
   useEffect(() => {
     const loadHistory = async () => {
@@ -702,6 +717,16 @@ function HistoryPage() {
                   <span className="rounded-full border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] uppercase tracking-wider text-slate-400">
                     {entry.type.replace(/_/g, ' ')}
                   </span>
+                  {entry.type === 'workout_log' && (
+                    <button
+                      type="button"
+                      onClick={() => removeWorkoutLog(entry._id)}
+                      disabled={removingWorkout === entry._id}
+                      className="ml-2 rounded-lg border border-red-500/30 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                    >
+                      {removingWorkout === entry._id ? 'Removing...' : 'Remove'}
+                    </button>
+                  )}
                 </div>
               );
             })}

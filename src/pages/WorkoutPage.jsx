@@ -441,7 +441,7 @@ export default function WorkoutPage() {
                   className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-300 px-4 py-2.5 text-xs font-bold text-slate-950 transition hover:from-amber-600 hover:to-yellow-400"
                 >
                   <Clock className="h-4 w-4" />
-                  Log workout
+                  Record workout
                 </button>
               </div>
             </div>

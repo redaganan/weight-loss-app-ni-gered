@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 import { Menu, X } from 'lucide-react';
 import UserMenu from './UserMenu';
 
 const tabs = [
-  { name: 'Dashboard', path: '/' },
+  { name: 'Dashboard', path: '/plan' },
   { name: 'Workouts', path: '/workouts' },
   { name: 'Meals', path: '/meals' },
   { name: 'Planner', path: '/planner' },
@@ -13,6 +13,7 @@ const tabs = [
 
 export default function Header() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const location = useLocation();
 
   useEffect(() => {
     const closeMobileNav = () => setMobileNavOpen(false);
@@ -30,13 +31,18 @@ export default function Header() {
             key={tab.path}
             to={tab.path}
             end={tab.path === '/'}
-            className={({ isActive }) =>
+            className={({ isActive }) => {
+              const dashboardActive = tab.name === 'Dashboard'
+                && (location.pathname === '/' || location.pathname === '/plan');
+              const active = dashboardActive || isActive;
+              return (
               `rounded-full px-5 py-2 text-xs font-bold transition-all duration-300 ${
-                isActive
+                active
                   ? 'bg-linear-to-r from-amber-400 to-yellow-300 text-black shadow-lg shadow-amber-500/25'
                   : 'text-neutral-400 hover:text-white'
               }`
-            }
+              );
+            }}
           >
             {tab.name}
           </NavLink>
@@ -62,15 +68,20 @@ export default function Header() {
             <NavLink
               key={tab.path}
               to={tab.path}
-              end={tab.path === '/'}
+              end
               onClick={() => setMobileNavOpen(false)}
-              className={({ isActive }) =>
+              className={({ isActive }) => {
+                const dashboardActive = tab.name === 'Dashboard'
+                  && (location.pathname === '/' || location.pathname === '/plan');
+                const active = dashboardActive || isActive;
+                return (
                 `block rounded-xl px-4 py-3 text-sm font-semibold transition ${
-                  isActive
+                  active
                     ? 'bg-linear-to-r from-amber-400 to-yellow-300 text-black'
                     : 'text-neutral-300 hover:bg-neutral-900 hover:text-white'
                 }`
-              }
+                );
+              }}
             >
               {tab.name}
             </NavLink>

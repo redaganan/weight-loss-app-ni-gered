@@ -25,7 +25,7 @@ export default function LoginPage() {
             const { data } = await api.post('/auth/google', { credential });
             localStorage.setItem('token', data.token);
             storeUserSession(data.user._id, data.user);
-            navigate('/');
+            navigate(data.needsSetup ? '/setup' : '/');
           } catch (err) {
             setError(err.response?.data?.message || 'Google sign-in failed.');
           }

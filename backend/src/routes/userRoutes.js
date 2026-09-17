@@ -1011,6 +1011,22 @@ router.post('/workouts', requireUserMatch, async (req, res) => {
   }
 });
 
+router.delete('/workouts/:workoutId', async (req, res) => {
+  try {
+    const userId = req.auth.userId;
+    const workout = await RecommendationHistory.findOneAndDelete({
+      _id: req.params.workoutId,
+      userAccount: userId,
+      type: 'workout_log',
+    });
+    if (!workout) return res.status(404).json({ message: 'Workout log not found.' });
+    return res.json({ message: 'Workout log removed.' });
+  } catch (error) {
+    console.error('workout delete error:', error);
+    return res.status(500).json({ message: 'Failed to remove workout log.', error: error.message });
+  }
+});
+
 router.post('/meals', requireUserMatch, async (req, res) => {
   try {
     const { userAccount, foodName, calories, protein, carbs, fat, portionSize } = req.body;
@@ -1214,8 +1230,14 @@ router.post('/auth/google', async (req, res) => {
         passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12),
       });
     }
+    const hasProfile = Boolean(await UserProfile.exists({ userAccount: account._id }));
     const token = createToken(account._id);
-    return res.json({ message: 'Google sign-in successful', token, user: { _id: account._id, email: account.email, name: account.name, token } });
+    return res.json({
+      message: 'Google sign-in successful',
+      token,
+      needsSetup: !hasProfile,
+      user: { _id: account._id, email: account.email, name: account.name, token },
+    });
   } catch (error) {
     console.error('Google sign-in error:', error);
     return res.status(401).json({ message: 'Google sign-in could not be verified.' });

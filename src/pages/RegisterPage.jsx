@@ -31,7 +31,7 @@ export default function RegisterPage() {
             const user = data?.user;
             localStorage.setItem('token', data.token);
             storeUserSession(user._id, user);
-            navigate('/');
+            navigate(data.needsSetup ? '/setup' : '/');
           } catch (err) {
             setError(err.response?.data?.message || 'Google account creation failed.');
           }
