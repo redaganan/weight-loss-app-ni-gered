@@ -658,7 +658,12 @@ router.get('/analytics/:userId', requireUserMatch, async (req, res) => {
 
     const startDate = new Date();
     startDate.setUTCHours(0, 0, 0, 0);
-    startDate.setUTCDate(startDate.getUTCDate() - (days - 1));
+    if (range === '7d') {
+      const mondayOffset = (startDate.getUTCDay() + 6) % 7;
+      startDate.setUTCDate(startDate.getUTCDate() - mondayOffset);
+    } else {
+      startDate.setUTCDate(startDate.getUTCDate() - (days - 1));
+    }
 
     const [meals, workouts, weightLogs] = await Promise.all([
       Meal.find({ userAccount: req.params.userId, createdAt: { $gte: startDate } }).lean(),
@@ -677,6 +682,7 @@ router.get('/analytics/:userId', requireUserMatch, async (req, res) => {
       return {
         dateKey,
         label: date.toLocaleDateString('en-US', { weekday: 'short' }),
+        dateLabel: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }),
         calories: 0,
         burned: 0,
         workouts: 0,
@@ -690,13 +696,30 @@ router.get('/analytics/:userId', requireUserMatch, async (req, res) => {
       const point = getPoint(meal.createdAt || meal.date);
       if (point) point.calories += Number(meal.calories) || 0;
     });
-    workouts.forEach((entry) => {
-      const point = getPoint(entry.createdAt || entry.generatedAt);
-      if (point) {
-        point.workouts += 1;
-        point.burned += Number(entry.payload?.caloriesBurned) || 0;
-      }
-    });
+    const latestPlannerSnapshot = workouts
+      .filter((entry) => Array.isArray(entry.payload?.weeklyRhythm))
+      .sort((a, b) => new Date(b.createdAt || b.generatedAt) - new Date(a.createdAt || a.generatedAt))[0];
+
+    if (latestPlannerSnapshot) {
+      const mondayIndex = startDate.getUTCDay() === 0 ? 6 : startDate.getUTCDay() - 1;
+      latestPlannerSnapshot.payload.weeklyRhythm.forEach((day) => {
+        if (!day.completed) return;
+        const dayIndex = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+          .indexOf(String(day.day || '').toLowerCase());
+        const point = points[dayIndex >= 0 ? dayIndex : mondayIndex];
+        if (point) point.workouts += 1;
+      });
+    }
+
+    workouts
+      .filter((entry) => !Array.isArray(entry.payload?.weeklyRhythm))
+      .forEach((entry) => {
+        const point = getPoint(entry.createdAt || entry.generatedAt);
+        if (point) {
+          point.workouts += 1;
+          point.burned += Number(entry.payload?.caloriesBurned) || 0;
+        }
+      });
     weightLogs.forEach((log) => {
       const point = getPoint(log.loggedAt || log.createdAt);
       if (point) point.weight = Number(log.weight) || null;

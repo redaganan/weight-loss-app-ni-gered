@@ -10,6 +10,7 @@ import LoginPage from './pages/LoginPage';
 import { api, getStoredUserId } from './services/api';
 import { ToastProvider } from './components/Toast';
 import { calculateWeightProgress } from './utils/progress';
+import { getCurrentWeekDates } from './utils/week';
 
 class AppErrorBoundary extends Component {
   constructor(props) {
@@ -146,6 +147,7 @@ function PlannerPage() {
   const [weeklyPlan, setWeeklyPlan] = useState(defaultWeeklyPlan);
   const [editingIndex, setEditingIndex] = useState(null);
   const [editDraft, setEditDraft] = useState({ workout: '', meal: '', workoutFocus: '', nutritionStrategy: '' });
+  const weekDates = getCurrentWeekDates();
 
   const persistPlan = async (nextPlan) => {
     const userId = getStoredUserId();
@@ -185,7 +187,12 @@ function PlannerPage() {
       try {
         const { data } = await api.get(`/plan/${userId}`);
         const nextPlan = data.weeklyRhythm || data.currentPlan?.weeklyRhythm || savedRhythm || defaultWeeklyPlan;
-        const normalized = Array.isArray(nextPlan) && nextPlan.length ? nextPlan : defaultWeeklyPlan;
+        const sourcePlan = Array.isArray(nextPlan) && nextPlan.length ? nextPlan : defaultWeeklyPlan;
+        const normalized = weekDates.map((date, index) => (
+          sourcePlan.find((item) => item.day?.toLowerCase() === date.day.toLowerCase())
+          || sourcePlan[index]
+          || defaultWeeklyPlan[index]
+        ));
         setWeeklyPlan(normalized);
       } catch (error) {
         setWeeklyPlan(savedRhythm.length ? savedRhythm : defaultWeeklyPlan);
@@ -237,17 +244,35 @@ function PlannerPage() {
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.24em] text-amber-400">Planner</p>
             <h1 className="mt-2 text-3xl font-bold text-slate-100">Weekly rhythm</h1>
+            <p className="mt-2 text-sm text-slate-400">
+              {weekDates[0].shortDate} – {weekDates[6].shortDate} · Monday to Sunday
+            </p>
           </div>
           <button className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-300 hover:bg-amber-500/20">
             Edit plan
           </button>
         </div>
 
+        <div className="mb-5 grid grid-cols-7 gap-2 rounded-2xl border border-slate-800 bg-slate-950/60 p-3">
+          {weekDates.map((date, index) => (
+            <div key={date.dateKey} className="min-w-0 rounded-xl border border-slate-800 bg-slate-900/70 px-2 py-3 text-center">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{date.day.slice(0, 3)}</p>
+              <p className="mt-1 text-sm font-bold text-slate-100">{date.shortDate}</p>
+              <div className={`mx-auto mt-2 h-2 w-2 rounded-full ${weeklyPlan[index]?.completed ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+            </div>
+          ))}
+        </div>
+
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {weeklyPlan.map((item, index) => (
+          {weekDates.map((date, index) => {
+            const item = weeklyPlan[index] || { day: date.day };
+            return (
             <div key={`${item.day}-${index}`} className="rounded-2xl border border-slate-800 bg-slate-950/50 p-4">
               <div className="mb-3 flex items-center justify-between">
-                <span className="text-lg font-bold text-slate-100">{item.day}</span>
+                <div>
+                  <span className="text-lg font-bold text-slate-100">{date.day}</span>
+                  <p className="mt-0.5 text-xs text-slate-500">{date.shortDate}</p>
+                </div>
                 <span className={`rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] ${
                   item.completed
                     ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
@@ -332,7 +357,8 @@ function PlannerPage() {
                 </div>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>

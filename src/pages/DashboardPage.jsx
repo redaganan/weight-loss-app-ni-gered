@@ -4,6 +4,7 @@ import { Flame, Utensils, Dumbbell, TrendingDown, Sparkles, RefreshCw, ChevronRi
 import { api, getStoredUserId } from '../services/api';
 import { useToast } from '../components/Toast';
 import { calculateWeightProgress } from '../utils/progress';
+import { getCurrentWeekDates } from '../utils/week';
 import {
   Area,
   AreaChart,
@@ -16,16 +17,12 @@ import {
   YAxis,
 } from 'recharts';
 
-const formatAnalyticsDate = (date) =>
-  new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(date);
-
 function buildEmptyAnalytics() {
-  return Array.from({ length: 7 }, (_, index) => {
-    const date = new Date();
-    date.setDate(date.getDate() - (6 - index));
+  return getCurrentWeekDates().map(({ day, dateKey, shortDate }) => {
     return {
-      label: formatAnalyticsDate(date),
-      dateKey: date.toISOString().slice(0, 10),
+      label: day.slice(0, 3),
+      dateLabel: shortDate,
+      dateKey,
       calories: 0,
       burned: 0,
       workouts: 0,
@@ -51,15 +48,28 @@ function normalizeAnalytics(history = [], meals = [], weightLogs = [], profile =
     if (point) point.weight = Number(log.weight) || point.weight;
   });
 
+  const latestPlannerEntry = [...history]
+    .filter((entry) => Array.isArray(entry.payload?.weeklyRhythm))
+    .sort((a, b) => new Date(b.createdAt || b.generatedAt) - new Date(a.createdAt || a.generatedAt))[0];
+
   history.forEach((entry) => {
     const date = entry.createdAt || entry.generatedAt || Date.now();
     const dateKey = new Date(date).toISOString().slice(0, 10);
-    const point = pointMap.get(dateKey);
-    if (!point) return;
-
     const payload = entry.payload || {};
     const rhythm = Array.isArray(payload.weeklyRhythm) ? payload.weeklyRhythm : [];
-    point.workouts += rhythm.filter((day) => day.completed).length || (entry.type === 'workout_log' ? 1 : 0);
+    if (rhythm.length) {
+      if (entry !== latestPlannerEntry) return;
+      rhythm.forEach((day) => {
+        if (!day.completed) return;
+        const point = points.find((candidate) => candidate.label.toLowerCase() === String(day.day || '').slice(0, 3).toLowerCase());
+        if (point) point.workouts += 1;
+      });
+      return;
+    }
+
+    const point = pointMap.get(dateKey);
+    if (!point) return;
+    point.workouts += entry.type === 'workout_log' ? 1 : 0;
     point.burned += Number(payload.caloriesBurned) || 0;
     const loggedWeight = Number(payload.currentWeight || payload.weight);
     if (loggedWeight > 0) point.weight = loggedWeight;
@@ -524,7 +534,7 @@ export default function DashboardPage({ onViewSetup }) {
                 <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="label" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} width={38} />
-                <Tooltip contentStyle={analyticsTooltipStyle} formatter={(value) => [`${value ?? '--'} kg`, 'Weight']} />
+                <Tooltip contentStyle={analyticsTooltipStyle} labelFormatter={(_, payload) => payload?.[0]?.payload?.dateLabel || ''} formatter={(value) => [`${value ?? '--'} kg`, 'Weight']} />
                 <Area type="monotone" dataKey="weight" stroke="#fbbf24" strokeWidth={3} fill="url(#weightFill)" connectNulls />
               </AreaChart>
             </ResponsiveContainer>
@@ -546,7 +556,7 @@ export default function DashboardPage({ onViewSetup }) {
                 <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="label" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} width={38} />
-                <Tooltip contentStyle={analyticsTooltipStyle} />
+                <Tooltip contentStyle={analyticsTooltipStyle} labelFormatter={(_, payload) => payload?.[0]?.payload?.dateLabel || ''} />
                 <Bar dataKey="calories" name="Meal calories" fill="#f59e0b" radius={[5, 5, 0, 0]} />
                 <Bar dataKey="workouts" name="Workouts" fill="#fde047" radius={[5, 5, 0, 0]} />
               </BarChart>
