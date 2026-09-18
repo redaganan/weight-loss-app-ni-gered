@@ -2,6 +2,8 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 const { connectDB } = require('./src/config/db');
 const Exercise = require('./src/models/Exercise');
 const userRoutes = require('./src/routes/userRoutes');
@@ -202,19 +204,42 @@ const defaultExercises = [
   },
 ];
 
+function loadFreeExerciseDb() {
+  const filePath = path.join(__dirname, 'data', 'free-exercise-db.json');
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8')).map((exercise) => ({
+      name: exercise.name,
+      category: exercise.category || 'strength',
+      target: Array.isArray(exercise.primaryMuscles) ? exercise.primaryMuscles[0] || '' : '',
+      equipment: exercise.equipment || 'bodyweight',
+      description: Array.isArray(exercise.instructions) ? exercise.instructions.join(' ') : '',
+      instructions: Array.isArray(exercise.instructions) ? exercise.instructions : [],
+      images: Array.isArray(exercise.images)
+        ? exercise.images.map((image) => `https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/exercises/${image}`)
+        : [],
+    })).filter((exercise) => exercise.name);
+  } catch (error) {
+    console.error('Free exercise catalog could not be loaded:', error.message);
+    return [];
+  }
+}
+
 const app = express();
 const DEFAULT_PORT = Number(process.env.PORT) || 5000;
 const FALLBACK_PORT = Number(process.env.PORT) ? Number(process.env.PORT) + 1 : 5001;
 
 async function seedDefaultExercises() {
   try {
-    const operations = defaultExercises.map((exercise) => ({
+    const importedExercises = loadFreeExerciseDb();
+    const exercises = [...defaultExercises, ...importedExercises];
+    const operations = exercises.map((exercise) => ({
       updateOne: {
         filter: { name: exercise.name },
         update: {
           $set: {
             ...exercise,
-            images: Array.isArray(exercise.images) ? exercise.images : [exercise.images],
+            images: (Array.isArray(exercise.images) ? exercise.images : [exercise.images])
+              .filter((image) => typeof image === 'string' && !image.includes('giphy.com')),
           },
         },
         upsert: true,

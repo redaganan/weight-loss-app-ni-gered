@@ -11,8 +11,38 @@ const Meal = require('../models/Meal');
 const RecommendationHistory = require('../models/RecommendationHistory');
 const WeightLog = require('../models/WeightLog');
 const AuthOtp = require('../models/AuthOtp');
+const MealLog = require('../models/MealLog');
+const WorkoutLog = require('../models/WorkoutLog');
+const FitnessPlan = require('../models/FitnessPlan');
+const PlanDay = require('../models/PlanDay');
+const PlanExercise = require('../models/PlanExercise');
+const PlanMeal = require('../models/PlanMeal');
 const { createOtp, hashOtp, sendOtpEmail } = require('../services/authEmail');
 const { createToken, requireAuth, requireUserMatch } = require('../middleware/auth');
+
+const GEMINI_MODELS = [
+  process.env.GEMINI_MODEL,
+  'gemini-2.5-flash',
+  'gemini-3-flash-preview',
+  'gemini-flash-latest',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+].filter(Boolean);
+
+async function generateGeminiContent(genAI, request) {
+  let lastError;
+  for (const modelName of GEMINI_MODELS) {
+    try {
+      return await genAI.getGenerativeModel({ model: modelName }).generateContent(request);
+    } catch (error) {
+      lastError = error;
+      if (!/model|not found|unsupported|404/i.test(String(error.message || error))) {
+        throw error;
+      }
+    }
+  }
+  throw lastError || new Error('No supported Gemini model is configured.');
+}
 
 function createOtpToken(email, purpose) {
   return require('jsonwebtoken').sign(
@@ -99,13 +129,19 @@ function getPlannerDateKey(dayName, referenceDate = new Date()) {
   return `${monday.getUTCFullYear()}-${String(monday.getUTCMonth() + 1).padStart(2, '0')}-${String(monday.getUTCDate()).padStart(2, '0')}`;
 }
 
-function parseDurationMinutes(item) {
-  const source = String(item?.duration || item?.timeScope || '');
-  const match = source.match(/\d+(?:\.\d+)?/);
-  const minutes = match ? Number(match[0]) : 30;
-  return source.toLowerCase().includes('sec') && !source.toLowerCase().includes('min')
-    ? Math.max(10, Math.round(minutes / 2))
-    : Math.min(360, Math.max(10, Math.round(minutes)));
+function applyPassedDayStatuses(rhythm, referenceDate = new Date()) {
+  const todayKey = getManilaDateKey(referenceDate);
+  return rhythm.map((item) => {
+    const completed = Boolean(item.completed);
+    const dateKey = getPlannerDateKey(item.day, referenceDate);
+    const missed = !completed && dateKey < todayKey;
+    return {
+      ...item,
+      completed,
+      missed,
+      status: completed ? 'Completed' : missed ? 'Missed' : (item.status || 'Planned'),
+    };
+  });
 }
 
 function parseWorkoutVolume(value) {
@@ -124,10 +160,6 @@ function estimatePlannerCalories(profile, item) {
     : focus.includes('strength') || focus.includes('power') ? 6
       : focus.includes('rest') || focus.includes('recovery') || focus.includes('walk') ? 3.5
         : 6;
-  const durationMinutes = parseDurationMinutes({
-    ...item,
-    timeScope: item?.completedTimeScope || item?.timeScope,
-  });
   const exerciseDetails = Array.isArray(item?.completedExerciseDetails) && item.completedExerciseDetails.length
     ? item.completedExerciseDetails
     : [{ performance: item?.completedRepetitions || item?.repetitions }];
@@ -139,9 +171,10 @@ function estimatePlannerCalories(profile, item) {
       .map(() => ({ performance: item?.repetitions }));
   const plannedVolume = plannedDetails.reduce((total, exercise) => total + parseWorkoutVolume(exercise.performance), 0);
   const volumeFactor = Math.min(1.25, Math.max(0.35, actualVolume / Math.max(plannedVolume, 1)));
+  const estimatedMinutes = Math.min(90, Math.max(10, Math.round(actualVolume * 2)));
   return {
-    durationMinutes,
-    caloriesBurned: Math.round(((met * 3.5 * weight * durationMinutes) / 200) * volumeFactor),
+    durationMinutes: estimatedMinutes,
+    caloriesBurned: Math.round(((met * 3.5 * weight * estimatedMinutes) / 200) * volumeFactor),
   };
 }
 
@@ -292,6 +325,124 @@ function normalizeScannedMeal(meal) {
   };
 }
 
+function getExerciseMatches(text, exercises) {
+  const normalizedText = String(text || '').toLowerCase();
+  const keywordGroups = [
+    { keywords: ['upper', 'chest', 'push', 'press', 'power'], names: ['Push-ups', 'Bench Press', 'Incline Press'] },
+    { keywords: ['lower', 'leg', 'squat', 'glute', 'drive'], names: ['Squats', 'Lunges', 'Romanian Deadlifts'] },
+    { keywords: ['core', 'plank', 'ab', 'stability', 'anti-rotation'], names: ['Planks', 'Russian Twists', 'Mountain Climbers'] },
+    { keywords: ['cardio', 'hiit', 'sprint', 'conditioning', 'burn'], names: ['Jumping Jacks', 'High Knees', 'Burpees'] },
+    { keywords: ['back', 'pull', 'row'], names: ['Pull-ups', 'Lat Pulldowns'] },
+  ];
+  const preferredNames = new Set();
+  keywordGroups.forEach((group) => {
+    if (group.keywords.some((keyword) => normalizedText.includes(keyword))) {
+      group.names.forEach((name) => preferredNames.add(name.toLowerCase()));
+    }
+  });
+
+  const matches = exercises.filter((exercise) => preferredNames.has(String(exercise.name).toLowerCase()));
+  return matches.length
+    ? matches.slice(0, 3)
+    : exercises
+      .filter((exercise) => normalizedText.includes(String(exercise.category || '').toLowerCase()))
+      .slice(0, 3);
+}
+
+function getPlanExerciseDetails(item, exerciseIndex = 0) {
+  const repetitions = String(item?.repetitions || '');
+  const sets = Number(repetitions.match(/(\d+)\s*sets?/i)?.[1]) || undefined;
+  const reps = Number(repetitions.match(/(?:x|×)\s*(\d+)\s*reps?/i)?.[1]) || undefined;
+  const restText = String(item?.rest || '');
+  const restMatch = restText.match(/(\d+)\s*(min|mins|minutes?|sec|secs|seconds?)/i);
+  const restSeconds = restMatch
+    ? Number(restMatch[1]) * (/min/i.test(restMatch[2]) ? 60 : 1)
+    : undefined;
+  const detail = Array.isArray(item?.completedExerciseDetails) && item.completedExerciseDetails[exerciseIndex]
+    ? item.completedExerciseDetails[exerciseIndex]
+    : null;
+
+  return {
+    sets: Number(detail?.sets) || sets,
+    reps: Number(detail?.reps) || reps,
+    durationMinutes: Math.max(0, Number.parseInt(item?.duration, 10) || 0),
+    restSeconds,
+    notes: [
+      item?.workout || item?.workoutFocus,
+      item?.timeScope,
+      detail?.performance,
+    ].filter(Boolean).join(' · '),
+  };
+}
+
+async function persistNormalizedPlan({ userAccount, userProfile, payload }) {
+  const latest = await FitnessPlan.findOne({ userProfile }).sort({ version: -1 }).select('version').lean();
+  const version = Number(latest?.version || 0) + 1;
+  await FitnessPlan.updateMany(
+    { userProfile, status: 'active' },
+    { $set: { status: 'archived' } },
+  );
+  const fitnessPlan = await FitnessPlan.create({
+    userAccount,
+    userProfile,
+    summary: payload.summary,
+    source: payload.source || 'fallback',
+    version,
+    status: 'active',
+    generatedAt: payload.generatedAt || new Date(),
+  });
+
+  const rhythm = Array.isArray(payload.weeklyRhythm) ? payload.weeklyRhythm : [];
+  const exercises = await Exercise.find({}).lean();
+  if (rhythm.length) {
+    const days = await PlanDay.insertMany(rhythm.map((item, index) => ({
+      fitnessPlan: fitnessPlan._id,
+      day: item.day || `Day ${index + 1}`,
+      workoutFocus: item.workoutFocus || item.focus || '',
+      duration: item.duration || '',
+      repetitions: item.repetitions || '',
+      timeScope: item.timeScope || '',
+      rest: item.rest || '',
+      meal: item.meal || '',
+      nutritionStrategy: item.nutritionStrategy || '',
+      completed: Boolean(item.completed),
+      missed: Boolean(item.missed),
+      status: item.status || '',
+      order: index,
+    })));
+
+    const planExercises = days.flatMap((day, index) => {
+      const item = rhythm[index];
+      const matches = getExerciseMatches(`${item.workoutFocus || ''} ${item.workout || ''}`, exercises);
+      return matches.map((exercise, exerciseIndex) => ({
+        planDay: day._id,
+        exercise: exercise._id,
+        ...getPlanExerciseDetails(item, exerciseIndex),
+        order: exerciseIndex,
+      }));
+    });
+    if (planExercises.length) await PlanExercise.insertMany(planExercises);
+  }
+
+  const mealPlan = Array.isArray(payload.mealPlan) ? payload.mealPlan : [];
+  if (mealPlan.length) {
+    await PlanMeal.insertMany(mealPlan.map((item, index) => ({
+      fitnessPlan: fitnessPlan._id,
+      mealType: ['Breakfast', 'Lunch', 'Snack', 'Dinner'].includes(item.type) ? item.type : 'Snack',
+      name: item.name || `Meal ${index + 1}`,
+      description: item.description || '',
+      calories: Math.max(0, Number(item.calories) || 0),
+      protein: Math.max(0, Number(item.protein) || 0),
+      carbs: Math.max(0, Number(item.carbs) || 0),
+      fat: Math.max(0, Number(item.fat) || 0),
+      instructions: item.instructions || '',
+      order: index,
+    })));
+  }
+
+  return fitnessPlan;
+}
+
 async function generateAiPlan(profile) {
   const apiKey = process.env.GEMINI_API_KEY;
   const fallbackMealPlan = buildMealPlan(profile);
@@ -309,7 +460,6 @@ return {
 
   try {
 const genAI = new GoogleGenerativeAI(apiKey);
-const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
 const prompt = `You are a health and fitness coach. Return ONLY valid JSON with this exact structure:
 {
   "summary": "string",
@@ -335,7 +485,7 @@ Requirements:
 - Keep each meal title specific and personalized.
 `;
 
-const result = await model.generateContent(prompt);
+const result = await generateGeminiContent(genAI, prompt);
 const responseText = result?.response ? await result.response.text() : '';
 const parsed = parseGeminiJson(responseText);
 
@@ -416,7 +566,16 @@ const exerciseFallbackLibrary = [
 
 router.get('/exercises', async (req, res) => {
   try {
-    let exercises = await Exercise.find().limit(24).lean();
+    const limit = Math.min(Math.max(Number(req.query.limit) || 60, 1), 300);
+    const withImages = (items) => items
+      .filter((exercise) => Array.isArray(exercise.images)
+        && exercise.images.some((image) => typeof image === 'string'
+          && image.trim()
+          && !image.includes('giphy.com')))
+      .slice(0, limit);
+    let exercises = withImages(await Exercise.find({
+      images: { $elemMatch: { $type: 'string', $ne: '' } },
+    }).sort({ name: 1 }).lean());
 
     if (exercises.length === 0) {
       const operations = exerciseFallbackLibrary.map((exercise) => ({
@@ -433,7 +592,9 @@ router.get('/exercises', async (req, res) => {
       }));
 
       await Exercise.bulkWrite(operations, { ordered: false });
-      exercises = await Exercise.find().limit(24).lean();
+      exercises = withImages(await Exercise.find({
+        images: { $elemMatch: { $type: 'string', $ne: '' } },
+      }).sort({ name: 1 }).lean());
     }
 
     return res.json(exercises);
@@ -491,6 +652,31 @@ router.post('/user/setup', async (req, res) => {
       },
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
+    const profileData = userProfile.toObject();
+    const generatedPlan = await generateAiPlan(profileData);
+    const planPayload = {
+      summary: generatedPlan.summary,
+      mealPlan: generatedPlan.mealPlan,
+      workoutPlan: generatedPlan.workoutPlan,
+      weeklyRhythm: generatedPlan.weeklyRhythm,
+      progress: calculateProgress(profileData),
+      source: generatedPlan.source || 'fallback',
+      generatedAt: new Date().toISOString(),
+    };
+    const normalizedPlan = await persistNormalizedPlan({
+      userAccount: userAccount._id,
+      userProfile: userProfile._id,
+      payload: planPayload,
+    });
+    const updatedProfile = await UserProfile.findByIdAndUpdate(
+      userProfile._id,
+      {
+        currentPlan: planPayload,
+        weeklyRhythm: planPayload.weeklyRhythm,
+        planSummary: planPayload.summary,
+      },
+      { new: true },
+    );
 
     const token = createToken(userAccount._id);
     res.status(201).json({
@@ -501,7 +687,8 @@ router.post('/user/setup', async (req, res) => {
         email: userAccount.email,
         name: userAccount.name,
       },
-      userProfile,
+      userProfile: updatedProfile,
+      normalizedPlanId: normalizedPlan._id,
     });
   } catch (error) {
     console.error('setup error:', error);
@@ -596,19 +783,88 @@ router.get('/plan/:userId', requireUserMatch, async (req, res) => {
     const storedPlan = profile.currentPlan && typeof profile.currentPlan === 'object'
       ? profile.currentPlan
       : {};
-    const mealPlan = Array.isArray(storedPlan.mealPlan) && storedPlan.mealPlan.length
-      ? storedPlan.mealPlan
-      : buildMealPlan(profile);
+    const normalizedPlan = await FitnessPlan.findOne({
+      userProfile: profileDoc._id,
+      status: 'active',
+    }).sort({ version: -1 }).lean();
+    const [normalizedDays, normalizedMeals, normalizedExercises] = normalizedPlan
+      ? await Promise.all([
+        PlanDay.find({ fitnessPlan: normalizedPlan._id }).sort({ order: 1 }).lean(),
+        PlanMeal.find({ fitnessPlan: normalizedPlan._id }).sort({ order: 1 }).lean(),
+        PlanExercise.find({ planDay: { $in: await PlanDay.find({ fitnessPlan: normalizedPlan._id }).distinct('_id') } })
+          .populate('exercise', 'name category target equipment')
+          .sort({ order: 1 })
+          .lean(),
+      ])
+      : [[], [], []];
+    const savedRhythmByDay = new Map(
+      (Array.isArray(profile.weeklyRhythm) ? profile.weeklyRhythm : [])
+        .map((item) => [String(item.day || '').toLowerCase(), item]),
+    );
+    const normalizedRhythm = normalizedDays.map((day) => {
+      const savedDay = savedRhythmByDay.get(String(day.day || '').toLowerCase()) || {};
+      return {
+        day: day.day,
+        workoutFocus: day.workoutFocus,
+        workout: day.workoutFocus,
+        duration: day.duration,
+        repetitions: day.repetitions,
+        timeScope: day.timeScope,
+        rest: day.rest,
+        meal: day.meal,
+        nutritionStrategy: day.nutritionStrategy,
+        status: day.status,
+        completed: day.completed,
+        missed: day.missed,
+        completedRepetitions: savedDay.completedRepetitions,
+        completedRest: savedDay.completedRest,
+        completedExerciseDetails: savedDay.completedExerciseDetails,
+        caloriesBurned: savedDay.caloriesBurned,
+        exercises: normalizedExercises
+          .filter((item) => String(item.planDay) === String(day._id))
+          .map((item) => ({
+            id: item._id,
+            exercise: item.exercise,
+            sets: item.sets,
+            reps: item.reps,
+            durationMinutes: item.durationMinutes,
+            restSeconds: item.restSeconds,
+            notes: item.notes,
+            order: item.order,
+          })),
+      };
+    });
+    const mealPlan = normalizedMeals.length
+      ? normalizedMeals.map((meal) => ({
+          type: meal.mealType,
+          name: meal.name,
+          description: meal.description,
+          calories: meal.calories,
+          protein: meal.protein,
+          carbs: meal.carbs,
+          fat: meal.fat,
+          instructions: meal.instructions,
+        }))
+      : Array.isArray(storedPlan.mealPlan) && storedPlan.mealPlan.length
+        ? storedPlan.mealPlan
+        : buildMealPlan(profile);
     const fallbackPlan = buildFallbackWorkoutPlan(profile, mealPlan);
-    const weeklyRhythm = Array.isArray(profile.weeklyRhythm) && profile.weeklyRhythm.length
-      ? profile.weeklyRhythm
-      : Array.isArray(storedPlan.weeklyRhythm) && storedPlan.weeklyRhythm.length
-        ? storedPlan.weeklyRhythm
-        : fallbackPlan.weeklyRhythm;
+    const weeklyRhythm = applyPassedDayStatuses(normalizedRhythm.length
+      ? normalizedRhythm
+      : Array.isArray(profile.weeklyRhythm) && profile.weeklyRhythm.length
+        ? profile.weeklyRhythm
+        : Array.isArray(storedPlan.weeklyRhythm) && storedPlan.weeklyRhythm.length
+          ? storedPlan.weeklyRhythm
+          : fallbackPlan.weeklyRhythm);
     const planPayload = {
-      summary: storedPlan.summary || profile.planSummary || fallbackPlan.summary,
+      summary: normalizedPlan?.summary || storedPlan.summary || profile.planSummary || fallbackPlan.summary,
       mealPlan,
-      workoutPlan: fallbackPlan.workoutPlan,
+      workoutPlan: weeklyRhythm.map((item) => ({
+        day: item.day,
+        focus: item.workoutFocus,
+        workout: item.workout || item.workoutFocus,
+        duration: item.duration,
+      })),
       weeklyRhythm,
       progress: calculateProgress(profile),
       generatedAt: storedPlan.generatedAt || new Date().toISOString(),
@@ -631,7 +887,13 @@ router.get('/plan/:userId', requireUserMatch, async (req, res) => {
       profile: updatedProfile,
       macros: calculateMacros(profile),
       mealPlan,
-      workoutPlan: fallbackPlan.workoutPlan,
+      workoutPlan: weeklyRhythm.map((item) => ({
+        day: item.day,
+        focus: item.workoutFocus,
+        workout: item.workout || item.workoutFocus,
+        duration: item.duration,
+        exercises: item.exercises || [],
+      })),
       weeklyRhythm,
       summary: planPayload.summary,
       progress: calculateProgress(profile),
@@ -672,17 +934,26 @@ router.post('/user/planner/save', requireUserMatch, async (req, res) => {
     }
 
     const normalizedRhythm = Array.isArray(weeklyRhythm) && weeklyRhythm.length
-      ? weeklyRhythm.map((item, index) => ({
-          ...item,
-          day: item.day || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][index],
-          completed: Boolean(item.completed),
-          missed: Boolean(item.missed),
-          status: item.completed ? 'Completed' : item.missed ? 'Missed' : (item.status || 'Planned'),
-          ...getPlannerDetails(index, item),
-          ...(item.completed
-            ? { caloriesBurned: estimatePlannerCalories(profileDoc, item).caloriesBurned }
-            : {}),
-        }))
+      ? applyPassedDayStatuses(weeklyRhythm, new Date()).map((item, index) => {
+          const completed = Boolean(item.completed);
+          const missed = Boolean(item.missed);
+          return {
+            ...item,
+            day: item.day || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][index],
+            completed,
+            missed,
+            status: completed ? 'Completed' : missed ? 'Missed' : (item.status || 'Planned'),
+            ...getPlannerDetails(index, item),
+            ...(completed
+              ? { caloriesBurned: estimatePlannerCalories(profileDoc, item).caloriesBurned }
+              : {
+                  caloriesBurned: undefined,
+                  completedRepetitions: undefined,
+                  completedRest: undefined,
+                  completedExerciseDetails: undefined,
+                }),
+          };
+        })
       : profileDoc.weeklyRhythm || [];
 
     const nextWeightValue = Number(currentWeight ?? weight ?? profileDoc.weight ?? 0);
@@ -707,12 +978,31 @@ router.post('/user/planner/save', requireUserMatch, async (req, res) => {
     let plannerCaloriesBurned = 0;
     for (const item of normalizedRhythm) {
       const scheduledDate = getPlannerDateKey(item.day);
+      const activePlan = await FitnessPlan.findOne({
+        userProfile: profileDoc._id,
+        status: 'active',
+      }).sort({ version: -1 }).lean();
+      const planDay = activePlan
+        ? await PlanDay.findOneAndUpdate(
+          { fitnessPlan: activePlan._id, day: item.day },
+          {
+            $set: {
+              completed: Boolean(item.completed),
+              missed: Boolean(item.missed),
+              status: item.status || (item.completed ? 'Completed' : item.missed ? 'Missed' : 'Planned'),
+            },
+          },
+          { new: true },
+        ).lean()
+        : null;
       if (!item.completed) {
-        await RecommendationHistory.deleteOne({
+        const scheduledStart = new Date(`${scheduledDate}T00:00:00.000Z`);
+        const scheduledEnd = new Date(scheduledStart);
+        scheduledEnd.setUTCDate(scheduledEnd.getUTCDate() + 1);
+        await WorkoutLog.deleteOne({
           userAccount: userId,
-          type: 'workout_log',
-          'payload.source': 'planner_completion',
-          'payload.scheduledDate': scheduledDate,
+          source: 'planner',
+          scheduledDate: { $gte: scheduledStart, $lt: scheduledEnd },
         });
         continue;
       }
@@ -732,34 +1022,40 @@ router.post('/user/planner/save', requireUserMatch, async (req, res) => {
         caloriesBurned: workoutDetails.caloriesBurned,
         loggedAt: new Date().toISOString(),
       };
-      const existingLog = await RecommendationHistory.findOne({
+      const normalizedScheduledDate = new Date(`${scheduledDate}T00:00:00.000Z`);
+      let normalizedWorkout = await WorkoutLog.findOne({
         userAccount: userId,
-        type: 'workout_log',
-        'payload.source': 'planner_completion',
-        'payload.scheduledDate': scheduledDate,
+        source: 'planner',
+        scheduledDate: {
+          $gte: normalizedScheduledDate,
+          $lt: new Date(normalizedScheduledDate.getTime() + 24 * 60 * 60 * 1000),
+        },
       });
 
-      if (!existingLog) {
-        await RecommendationHistory.create({
+      if (!normalizedWorkout) {
+        normalizedWorkout = await WorkoutLog.create({
           userAccount: userId,
-          type: 'workout_log',
-          payload: workoutPayload,
+          exerciseName: String(workoutPayload.exerciseName),
+          durationMinutes: workoutPayload.durationMinutes,
+          intensity: workoutPayload.intensity,
+          caloriesBurned: workoutPayload.caloriesBurned,
+          scheduledDate: normalizedScheduledDate,
+          notes: workoutPayload.rest || '',
+          source: 'planner',
         });
       } else {
-        existingLog.payload = workoutPayload;
-        await existingLog.save();
+        normalizedWorkout.exerciseName = String(workoutPayload.exerciseName);
+        normalizedWorkout.durationMinutes = workoutPayload.durationMinutes;
+        normalizedWorkout.intensity = workoutPayload.intensity;
+        normalizedWorkout.caloriesBurned = workoutPayload.caloriesBurned;
+        normalizedWorkout.notes = workoutPayload.rest || '';
+        await normalizedWorkout.save();
       }
+      const exerciseMatch = getExerciseMatches(workoutPayload.exerciseName, await Exercise.find({}).lean())[0];
+      normalizedWorkout.planDay = planDay?._id || null;
+      normalizedWorkout.exercise = exerciseMatch?._id || null;
+      await normalizedWorkout.save();
     }
-
-    await RecommendationHistory.create({
-      userAccount: userId,
-      type: 'workout_log',
-      payload: {
-        weeklyRhythm: normalizedRhythm,
-        currentWeight: updatedProfile.weight,
-        updatedAt: new Date().toISOString(),
-      },
-    });
 
     res.json({
       message: 'Planner and weight updates saved successfully',
@@ -869,13 +1165,9 @@ router.get('/analytics/:userId', requireUserMatch, async (req, res) => {
       startDate.setUTCDate(startDate.getUTCDate() - (days - 1));
     }
 
-    const [meals, workouts, weightLogs] = await Promise.all([
-      Meal.find({ userAccount: req.params.userId, createdAt: { $gte: startDate } }).lean(),
-      RecommendationHistory.find({
-        userAccount: req.params.userId,
-        type: 'workout_log',
-        createdAt: { $gte: startDate },
-      }).lean(),
+    const [mealLogs, normalizedWorkouts, weightLogs] = await Promise.all([
+      MealLog.find({ userAccount: req.params.userId, loggedAt: { $gte: startDate } }).lean(),
+      WorkoutLog.find({ userAccount: req.params.userId, scheduledDate: { $gte: startDate } }).lean(),
       WeightLog.find({
         userAccount: req.params.userId,
         $or: [
@@ -904,32 +1196,15 @@ router.get('/analytics/:userId', requireUserMatch, async (req, res) => {
     const pointMap = new Map(points.map((point) => [point.dateKey, point]));
     const getPoint = (date) => pointMap.get(getManilaDateKey(date));
 
-    meals.forEach((meal) => {
-      const point = getPoint(meal.createdAt || meal.date);
+    mealLogs.forEach((meal) => {
+      const point = getPoint(meal.createdAt || meal.loggedAt || meal.date);
       if (point) point.calories += Number(meal.calories) || 0;
     });
-    const latestPlannerSnapshot = workouts
-      .filter((entry) => Array.isArray(entry.payload?.weeklyRhythm))
-      .sort((a, b) => new Date(b.createdAt || b.generatedAt) - new Date(a.createdAt || a.generatedAt))[0];
-
-    if (latestPlannerSnapshot) {
-      const mondayIndex = startDate.getUTCDay() === 0 ? 6 : startDate.getUTCDay() - 1;
-      latestPlannerSnapshot.payload.weeklyRhythm.forEach((day) => {
-        if (!day.completed) return;
-        const dayIndex = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
-          .indexOf(String(day.day || '').toLowerCase());
-        const point = points[dayIndex >= 0 ? dayIndex : mondayIndex];
-        if (point) point.workouts += 1;
-      });
-    }
-
-    workouts
-      .filter((entry) => !Array.isArray(entry.payload?.weeklyRhythm))
-      .forEach((entry) => {
-        const point = getPoint(entry.payload?.scheduledDate || entry.createdAt || entry.generatedAt);
+    normalizedWorkouts.forEach((workout) => {
+        const point = getPoint(workout.scheduledDate || workout.createdAt);
         if (point) {
           point.workouts += 1;
-          point.burned += Number(entry.payload?.caloriesBurned) || 0;
+          point.burned += Number(workout.caloriesBurned) || 0;
         }
       });
     const latestWeightByDate = new Map();
@@ -988,21 +1263,38 @@ router.post('/workouts', requireUserMatch, async (req, res) => {
     const weight = Number(profile?.weight) || 70;
     const caloriesBurned = Math.round((met * 3.5 * weight * duration) / 200);
 
-    const workout = await RecommendationHistory.create({
+    const workoutLog = await WorkoutLog.create({
       userAccount,
-      type: 'workout_log',
-      payload: {
-        exerciseName,
-        durationMinutes: duration,
-        intensity,
-        caloriesBurned,
-        loggedAt: new Date().toISOString(),
-      },
+      exerciseName: String(exerciseName).trim(),
+      durationMinutes: duration,
+      intensity,
+      caloriesBurned,
+      scheduledDate: new Date(),
+      source: 'manual',
     });
+
+    const exercise = await Exercise.findOne({
+      name: { $regex: `^${String(exerciseName).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
+    }).select('_id').lean();
+    if (exercise) {
+      workoutLog.exercise = exercise._id;
+      await workoutLog.save();
+    }
 
     return res.status(201).json({
       message: 'Workout logged successfully',
-      workout: workout.toObject(),
+      workout: {
+        _id: workoutLog._id,
+        type: 'workout_log',
+        normalizedId: workoutLog._id,
+        payload: {
+          exerciseName,
+          durationMinutes: duration,
+          intensity,
+          caloriesBurned,
+          loggedAt: workoutLog.createdAt,
+        },
+      },
       caloriesBurned,
     });
   } catch (error) {
@@ -1014,12 +1306,18 @@ router.post('/workouts', requireUserMatch, async (req, res) => {
 router.delete('/workouts/:workoutId', async (req, res) => {
   try {
     const userId = req.auth.userId;
-    const workout = await RecommendationHistory.findOneAndDelete({
-      _id: req.params.workoutId,
+    const requestedWorkoutId = String(req.params.workoutId || '');
+    const normalizedWorkoutId = requestedWorkoutId.startsWith('workout-')
+      ? requestedWorkoutId.slice('workout-'.length)
+      : requestedWorkoutId;
+    if (!/^[a-f\d]{24}$/i.test(normalizedWorkoutId)) {
+      return res.status(404).json({ message: 'Workout log not found.' });
+    }
+    const normalizedWorkout = await WorkoutLog.findOneAndDelete({
+      _id: normalizedWorkoutId,
       userAccount: userId,
-      type: 'workout_log',
     });
-    if (!workout) return res.status(404).json({ message: 'Workout log not found.' });
+    if (!normalizedWorkout) return res.status(404).json({ message: 'Workout log not found.' });
     return res.json({ message: 'Workout log removed.' });
   } catch (error) {
     console.error('workout delete error:', error);
@@ -1035,7 +1333,7 @@ router.post('/meals', requireUserMatch, async (req, res) => {
       return res.status(400).json({ message: 'userAccount, foodName, and calories are required.' });
     }
 
-    const meal = await Meal.create({
+    const mealLog = await MealLog.create({
       userAccount,
       foodName,
       calories,
@@ -1045,7 +1343,7 @@ router.post('/meals', requireUserMatch, async (req, res) => {
       portionSize,
     });
 
-    res.status(201).json({ message: 'Meal saved successfully', meal });
+    res.status(201).json({ message: 'Meal saved successfully', meal: mealLog });
   } catch (error) {
     console.error('meal save error:', error);
     res.status(500).json({ message: 'Failed to save meal', error: error.message });
@@ -1069,8 +1367,7 @@ router.post('/meals/scan', requireUserMatch, async (req, res) => {
     }
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
-    const result = await model.generateContent([
+    const result = await generateGeminiContent(genAI, [
       {
         text: `Analyze this food photo and return ONLY valid JSON:
 {
@@ -1095,13 +1392,21 @@ Estimate calories and macros for the visible portion. Use numbers only for nutri
     return res.json({ meal });
   } catch (error) {
     console.error('meal scan error:', error);
-    return res.status(502).json({ message: 'Food scanning failed. Try another image or use manual entry.' });
+  const message = /api key|permission|unauthorized|401|403/i.test(String(error.message || error))
+    ? 'Food scanning is not authorized. Check the GEMINI_API_KEY in backend/.env.'
+    : /model|not found|unsupported|404/i.test(String(error.message || error))
+      ? 'Food scanning model is unavailable. Set GEMINI_MODEL to a supported Gemini vision model.'
+      : 'Food scanning failed. Try another image or use manual entry.';
+  return res.status(502).json({ message });
   }
 });
 
 router.get('/meals/:userId', requireUserMatch, async (req, res) => {
   try {
-    const meals = await Meal.find({ userAccount: req.params.userId }).sort({ createdAt: -1 }).limit(10);
+    const meals = await MealLog.find({ userAccount: req.params.userId })
+      .sort({ loggedAt: -1 })
+      .limit(10)
+      .lean();
     res.json(meals);
   } catch (error) {
     console.error('meal fetch error:', error);
@@ -1348,6 +1653,11 @@ router.post('/plan/regenerate', requireUserMatch, async (req, res) => {
       { new: true },
     ).populate('userAccount');
 
+    const normalizedPlan = await persistNormalizedPlan({
+      userAccount: userId,
+      userProfile: updatedProfile._id,
+      payload,
+    });
     const recommendation = await RecommendationHistory.create({
       userAccount: userId,
       type: 'ai_plan_regen',
@@ -1366,6 +1676,7 @@ router.post('/plan/regenerate', requireUserMatch, async (req, res) => {
       summary: payload.summary,
       progress: payload.progress,
       recommendationId: recommendation._id,
+      normalizedPlanId: normalizedPlan._id,
     });
   } catch (error) {
     console.error('plan regenerate error:', error);
@@ -1417,9 +1728,16 @@ router.get('/recommendations/:userId', requireUserMatch, async (req, res) => {
 router.get('/history/:userId', requireUserMatch, async (req, res) => {
   try {
     const profile = await UserProfile.findOne({ userAccount: req.params.userId }).lean();
-    const history = await RecommendationHistory.find({ userAccount: req.params.userId }).sort({ createdAt: -1 }).limit(25).lean();
-    const meals = await Meal.find({ userAccount: req.params.userId }).sort({ createdAt: -1 }).limit(25).lean();
-    const mealHistory = meals.map((meal) => ({
+    const [recommendations, mealLogs, workoutLogs, weightLogs] = await Promise.all([
+      RecommendationHistory.find({
+        userAccount: req.params.userId,
+        type: { $ne: 'workout_log' },
+      }).sort({ createdAt: -1 }).limit(25).lean(),
+      MealLog.find({ userAccount: req.params.userId }).sort({ loggedAt: -1 }).limit(25).lean(),
+      WorkoutLog.find({ userAccount: req.params.userId }).sort({ scheduledDate: -1 }).limit(25).lean(),
+      WeightLog.find({ userAccount: req.params.userId }).sort({ loggedAt: -1 }).limit(25).lean(),
+    ]);
+    const mealHistory = mealLogs.map((meal) => ({
       _id: `meal-${meal._id}`,
       type: 'meal_log',
       payload: {
@@ -1427,22 +1745,41 @@ router.get('/history/:userId', requireUserMatch, async (req, res) => {
         calories: meal.calories,
         protein: meal.protein,
       },
-      createdAt: meal.createdAt || meal.date,
+      createdAt: meal.createdAt || meal.loggedAt || meal.date,
     }));
-    const combinedHistory = [...history, ...mealHistory]
+    const workoutHistory = workoutLogs.map((workout) => ({
+      _id: `workout-${workout._id}`,
+      type: 'workout_log',
+      payload: {
+        normalizedId: workout._id,
+        exerciseName: workout.exerciseName,
+        durationMinutes: workout.durationMinutes,
+        intensity: workout.intensity,
+        caloriesBurned: workout.caloriesBurned,
+        scheduledDate: workout.scheduledDate,
+      },
+      createdAt: workout.createdAt || workout.scheduledDate,
+    }));
+    const weightHistory = weightLogs.map((weight) => ({
+      _id: `weight-${weight._id}`,
+      type: 'weight_log',
+      payload: {
+        weight: weight.weight,
+        loggedAt: weight.loggedAt,
+        loggedDate: weight.loggedDate,
+      },
+      createdAt: weight.createdAt || weight.loggedAt,
+    }));
+    const combinedHistory = [...recommendations, ...mealHistory, ...workoutHistory, ...weightHistory]
       .sort((a, b) => new Date(b.createdAt || b.generatedAt) - new Date(a.createdAt || a.generatedAt))
       .slice(0, 40);
 
-    const workoutLogs = history.filter((entry) => (
-      entry.type === 'workout_log'
-      && (entry.payload?.exerciseName || Array.isArray(entry.payload?.weeklyRhythm))
-    )).length;
     const progress = calculateProgress(profile || {});
 
     res.json({
       profile,
       progress,
-      workoutStreak: workoutLogs || 0,
+      workoutStreak: workoutHistory.length,
       history: combinedHistory,
     });
   } catch (error) {

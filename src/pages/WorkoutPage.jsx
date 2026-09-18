@@ -3,12 +3,12 @@ import { Dumbbell, Search, Filter, ChevronLeft, ChevronRight, Activity, Flame, P
 import { api, getStoredUserId } from '../services/api';
 
 const gifPool = [
-  'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif',
-  'https://media.giphy.com/media/3o7TKVM8B6zoA0s0hW/giphy.gif',
-  'https://media.giphy.com/media/26BRqC7b9LZUz7FgY/giphy.gif',
-  'https://media.giphy.com/media/8kqlzJkfk0r1Ew4D4z/giphy.gif',
-  'https://media.giphy.com/media/7rj2Zg7n5hWnK/giphy.gif',
-  'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif',
+  'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 320 180%22%3E%3Crect width=%22320%22 height=%22180%22 fill=%22%230f172a%22/%3E%3Ctext x=%22160%22 y=%2295%22 text-anchor=%22middle%22 fill=%22%23f59e0b%22 font-family=%22sans-serif%22 font-size=%2216%22%3EExercise preview%3C/text%3E%3C/svg%3E',
+  'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 320 180%22%3E%3Crect width=%22320%22 height=%22180%22 fill=%22%230f172a%22/%3E%3Ctext x=%22160%22 y=%2295%22 text-anchor=%22middle%22 fill=%22%23f59e0b%22 font-family=%22sans-serif%22 font-size=%2216%22%3EExercise preview%3C/text%3E%3C/svg%3E',
+  'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 320 180%22%3E%3Crect width=%22320%22 height=%22180%22 fill=%22%230f172a%22/%3E%3Ctext x=%22160%22 y=%2295%22 text-anchor=%22middle%22 fill=%22%23f59e0b%22 font-family=%22sans-serif%22 font-size=%2216%22%3EExercise preview%3C/text%3E%3C/svg%3E',
+  'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 320 180%22%3E%3Crect width=%22320%22 height=%22180%22 fill=%22%230f172a%22/%3E%3Ctext x=%22160%22 y=%2295%22 text-anchor=%22middle%22 fill=%22%23f59e0b%22 font-family=%22sans-serif%22 font-size=%2216%22%3EExercise preview%3C/text%3E%3C/svg%3E',
+  'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 320 180%22%3E%3Crect width=%22320%22 height=%22180%22 fill=%22%230f172a%22/%3E%3Ctext x=%22160%22 y=%2295%22 text-anchor=%22middle%22 fill=%22%23f59e0b%22 font-family=%22sans-serif%22 font-size=%2216%22%3EExercise preview%3C/text%3E%3C/svg%3E',
+  'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 320 180%22%3E%3Crect width=%22320%22 height=%22180%22 fill=%22%230f172a%22/%3E%3Ctext x=%22160%22 y=%2295%22 text-anchor=%22middle%22 fill=%22%23f59e0b%22 font-family=%22sans-serif%22 font-size=%2216%22%3EExercise preview%3C/text%3E%3C/svg%3E',
 ];
 
 const defaultExerciseCatalog = [
@@ -224,8 +224,10 @@ const defaultExerciseCatalog = [
 // Sub-component para sa Auto-Looping Animation (Frame 0 <-> Frame 1)
 function ExerciseAnimator({ images, name }) {
   const [currentFrame, setCurrentFrame] = useState(0);
+  const [imageFailed, setImageFailed] = useState(false);
 
   useEffect(() => {
+    setImageFailed(false);
     if (!images || images.length <= 1) return;
 
     // Magpalit ng frame bawat 600ms para magmukhang totoong animated GIF
@@ -236,7 +238,7 @@ function ExerciseAnimator({ images, name }) {
     return () => clearInterval(timer);
   }, [images]);
 
-  if (!images || images.length === 0) {
+  if (!images || images.length === 0 || imageFailed) {
     return (
       <div className="text-slate-600 flex flex-col items-center gap-2">
         <Dumbbell className="w-10 h-10 opacity-40" />
@@ -245,7 +247,7 @@ function ExerciseAnimator({ images, name }) {
     );
   }
 
-  const currentImgUrl = images[currentFrame]?.startsWith('http')
+  const currentImgUrl = images[currentFrame]?.startsWith('http') || images[currentFrame]?.startsWith('data:')
     ? images[currentFrame]
     : `https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/exercises/${images[currentFrame]}`;
 
@@ -255,6 +257,7 @@ function ExerciseAnimator({ images, name }) {
         src={currentImgUrl}
         alt={name}
         loading="lazy"
+        onError={() => setImageFailed(true)}
         className="w-full h-full object-contain p-2 transition-all duration-200"
       />
       
@@ -283,7 +286,7 @@ export default function WorkoutPage() {
   useEffect(() => {
     const loadExercises = async () => {
       try {
-        const { data } = await api.get('/exercises');
+        const { data } = await api.get('/exercises?limit=300');
         const nextExercises = Array.isArray(data) && data.length ? data : defaultExerciseCatalog;
         setExercises(nextExercises);
       } catch (error) {
@@ -415,6 +418,9 @@ export default function WorkoutPage() {
                 <div>
                   <h3 className="text-base font-bold text-slate-100 capitalize line-clamp-1">{exercise.name}</h3>
                   <p className="text-xs text-slate-400 mt-1 capitalize">Equipment: {exercise.equipment || 'Bodyweight'}</p>
+                  {exercise.description && (
+                    <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-400">{exercise.description}</p>
+                  )}
                 </div>
 
                 <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-800/80">
@@ -459,7 +465,14 @@ export default function WorkoutPage() {
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.24em] text-amber-400">Workout tracker</p>
               <h2 className="mt-2 text-2xl font-bold text-slate-100">{selectedExercise.name}</h2>
-              <p className="mt-1 text-sm text-slate-400">Calories are calculated from your profile weight, duration, and intensity.</p>
+              <p className="mt-1 text-sm text-slate-400">Calories are calculated from your profile weight, sets, and reps.</p>
+              {Array.isArray(selectedExercise.instructions) && selectedExercise.instructions.length > 0 && (
+                <ol className="mt-4 list-decimal space-y-1 pl-5 text-xs leading-5 text-slate-400">
+                  {selectedExercise.instructions.slice(0, 5).map((instruction) => (
+                    <li key={instruction}>{instruction}</li>
+                  ))}
+                </ol>
+              )}
             </div>
             <label className="block text-sm font-semibold text-slate-300">
               Duration (minutes)

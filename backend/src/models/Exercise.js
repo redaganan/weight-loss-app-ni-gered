@@ -24,6 +24,7 @@ const exerciseSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    instructions: [{ type: String }],
   },
   { timestamps: true },
 );
