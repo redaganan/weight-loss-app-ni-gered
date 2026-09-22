@@ -320,9 +320,7 @@ export default function BodyOfDashboard({ onViewSetup }) {
   const bmiMetrics = getBmiMetrics(userData || {});
   const weeklyCaloriesConsumed = analytics.reduce((total, point) => total + point.calories, 0);
   const weeklyCaloriesBurned = analytics.reduce((total, point) => total + point.burned, 0);
-  const weeklyWorkouts = Array.isArray(userData?.weeklyRhythm)
-    ? userData.weeklyRhythm.filter((day) => day.completed).length
-    : 0;
+  const weeklyWorkouts = analytics.reduce((total, point) => total + (Number(point.workouts) || 0), 0);
 
   const handleLogWeight = async () => {
     const userId = getStoredUserId();
@@ -751,9 +749,6 @@ export default function BodyOfDashboard({ onViewSetup }) {
               <div className="flex items-center gap-2"><Utensils className="h-4 w-4 text-amber-400" />High protein consistency</div>
               <div className="flex items-center gap-2"><Flame className="h-4 w-4 text-amber-400" />Calorie deficit tracking</div>
             </div>
-            <button className="mt-5 inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-400 px-4 py-2.5 text-sm font-bold text-slate-950 shadow-lg shadow-amber-500/20">
-              Review plan <ChevronRight className="h-4 w-4" />
-            </button>
           </div>
         </div>
       </div>
