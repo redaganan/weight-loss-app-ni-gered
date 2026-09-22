@@ -18,6 +18,7 @@ export default function BodyOfPlanner() {
   const [completionIndex, setCompletionIndex] = useState(null);
   const [completionDraft, setCompletionDraft] = useState({ repetitions: '', rest: '', exercises: [] });
   const [editDraft, setEditDraft] = useState({ workout: '', workoutFocus: '', nutritionStrategy: '', repetitions: '', rest: '', exercises: [] });
+  const [loading, setLoading] = useState(true);
   const weekDates = getCurrentWeekDates();
   const getWorkoutDetails = (item, index) => {
     const defaults = [
@@ -83,6 +84,7 @@ export default function BodyOfPlanner() {
 
       if (!userId) {
         setWeeklyPlan(applyAutomaticMissedStatus(savedRhythm.length ? savedRhythm : defaultWeeklyPlan));
+        setLoading(false);
         return;
       }
 
@@ -131,6 +133,8 @@ export default function BodyOfPlanner() {
         }
       } catch (error) {
         setWeeklyPlan(applyAutomaticMissedStatus(savedRhythm.length ? savedRhythm : defaultWeeklyPlan));
+      } finally {
+        setLoading(false);
       }
     };
 
@@ -207,6 +211,23 @@ export default function BodyOfPlanner() {
     setEditDraft({ workout: '', workoutFocus: '', nutritionStrategy: '', repetitions: '', rest: '', exercises: [] });
     await persistPlan(nextPlan);
   };
+
+  if (loading) {
+    return (
+      <div className="space-y-8">
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/90 p-6 shadow-xl shadow-slate-950/40">
+          <div className="h-4 w-24 animate-pulse rounded bg-slate-800" />
+          <div className="mt-3 h-9 w-56 animate-pulse rounded bg-slate-800" />
+          <div className="mt-2 h-4 w-72 animate-pulse rounded bg-slate-800" />
+          <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {Array.from({ length: 6 }, (_, index) => (
+              <div key={index} className="h-64 animate-pulse rounded-2xl border border-slate-800 bg-slate-950/50" />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
