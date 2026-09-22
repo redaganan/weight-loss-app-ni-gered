@@ -22,8 +22,10 @@ export default function Header() {
   }, []);
 
   return (
-    <header className="relative z-100 mx-auto flex max-w-7xl items-center justify-between px-4 pt-5 sm:px-6 sm:pt-6">
-      <div className="w-10" />
+    <header className="relative z-100 mx-auto grid max-w-7xl grid-cols-[1fr_auto_1fr] items-center px-4 pt-5 sm:px-6 sm:pt-6">
+      <div className="justify-self-start">
+        <UserMenu />
+      </div>
 
       <nav className="hidden items-center gap-2 rounded-full border border-neutral-800/80 bg-neutral-900/80 p-1.5 shadow-[0_0_24px_rgba(245,158,11,0.15)] backdrop-blur-md md:flex">
         {tabs.map((tab) => (
@@ -49,7 +51,7 @@ export default function Header() {
         ))}
       </nav>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center justify-self-end gap-2">
         <button
           type="button"
           onClick={() => setMobileNavOpen((open) => !open)}
@@ -59,7 +61,6 @@ export default function Header() {
         >
           {mobileNavOpen ? <X size={18} /> : <Menu size={18} />}
         </button>
-        <UserMenu />
       </div>
 
       {mobileNavOpen && (
