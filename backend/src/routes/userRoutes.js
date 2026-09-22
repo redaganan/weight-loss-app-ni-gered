@@ -1318,7 +1318,50 @@ router.delete('/workouts/:workoutId', async (req, res) => {
       userAccount: userId,
     });
     if (!normalizedWorkout) return res.status(404).json({ message: 'Workout log not found.' });
-    return res.json({ message: 'Workout log removed.' });
+
+    let weeklyRhythm;
+    if (normalizedWorkout.source === 'planner') {
+      const planDay = normalizedWorkout.planDay
+        ? await PlanDay.findById(normalizedWorkout.planDay).lean()
+        : null;
+      const profile = await UserProfile.findOne({ userAccount: userId });
+
+      if (profile && planDay?.day) {
+        const nextRhythm = (Array.isArray(profile.weeklyRhythm) ? profile.weeklyRhythm : []).map((item) => {
+          if (String(item.day).toLowerCase() !== String(planDay.day).toLowerCase()) {
+            return item;
+          }
+
+          const resetItem = {
+            ...item,
+            completed: false,
+            caloriesBurned: undefined,
+            completedRepetitions: undefined,
+            completedRest: undefined,
+            completedExerciseDetails: undefined,
+          };
+          const [normalizedItem] = applyPassedDayStatuses([resetItem], new Date());
+          return normalizedItem;
+        });
+
+        weeklyRhythm = nextRhythm;
+        profile.weeklyRhythm = nextRhythm;
+        profile.currentPlan = {
+          ...(profile.currentPlan || {}),
+          weeklyRhythm: nextRhythm,
+          updatedAt: new Date().toISOString(),
+        };
+        await profile.save();
+
+        await PlanDay.findByIdAndUpdate(normalizedWorkout.planDay, {
+          completed: false,
+          missed: Boolean(nextRhythm.find((item) => String(item.day).toLowerCase() === String(planDay.day).toLowerCase())?.missed),
+          status: nextRhythm.find((item) => String(item.day).toLowerCase() === String(planDay.day).toLowerCase())?.status || 'Planned',
+        });
+      }
+    }
+
+    return res.json({ message: 'Workout log removed.', weeklyRhythm });
   } catch (error) {
     console.error('workout delete error:', error);
     return res.status(500).json({ message: 'Failed to remove workout log.', error: error.message });
@@ -1760,6 +1803,18 @@ router.get('/history/:userId', requireUserMatch, async (req, res) => {
       },
       createdAt: workout.createdAt || workout.scheduledDate,
     }));
+    const missedPlannerHistory = (Array.isArray(profile?.weeklyRhythm) ? profile.weeklyRhythm : [])
+      .filter((day) => day.missed && !day.completed)
+      .map((day) => ({
+        _id: `planner-missed-${String(day.day).toLowerCase()}`,
+        type: 'planner_missed',
+        payload: {
+          day: day.day,
+          workoutName: day.workout || day.workoutFocus || 'Planned workout',
+          scheduledDate: getPlannerDateKey(day.day),
+        },
+        createdAt: new Date(`${getPlannerDateKey(day.day)}T00:00:00.000Z`),
+      }));
     const weightHistory = weightLogs.map((weight) => ({
       _id: `weight-${weight._id}`,
       type: 'weight_log',
@@ -1770,7 +1825,7 @@ router.get('/history/:userId', requireUserMatch, async (req, res) => {
       },
       createdAt: weight.createdAt || weight.loggedAt,
     }));
-    const combinedHistory = [...recommendations, ...mealHistory, ...workoutHistory, ...weightHistory]
+    const combinedHistory = [...recommendations, ...mealHistory, ...workoutHistory, ...missedPlannerHistory, ...weightHistory]
       .sort((a, b) => new Date(b.createdAt || b.generatedAt) - new Date(a.createdAt || a.generatedAt))
       .slice(0, 40);
 
