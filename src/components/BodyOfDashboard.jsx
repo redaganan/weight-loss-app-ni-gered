@@ -566,7 +566,7 @@ export default function BodyOfDashboard({ onViewSetup }) {
           </div>
           <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={weightTrend} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+              <AreaChart data={weightTrend} margin={{ top: 8, right: 24, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id="weightFill" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.42} />
@@ -580,8 +580,9 @@ export default function BodyOfDashboard({ onViewSetup }) {
                   tick={{ fill: '#94a3b8', fontSize: 11 }}
                   axisLine={false}
                   tickLine={false}
+                  padding={{ left: 8, right: 12 }}
                 />
-                <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} width={38} />
+                <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} width={42} />
                 <Tooltip contentStyle={analyticsTooltipStyle} labelFormatter={(_, payload) => payload?.[0]?.payload?.dateLabel || ''} formatter={(value) => [`${value ?? '--'} kg`, 'Weight']} />
                 <Area type="monotone" dataKey="weight" stroke="#fbbf24" strokeWidth={3} fill="url(#weightFill)" connectNulls dot={{ r: 3, fill: '#fbbf24', strokeWidth: 0 }} activeDot={{ r: 5 }} />
               </AreaChart>
@@ -600,10 +601,16 @@ export default function BodyOfDashboard({ onViewSetup }) {
           </div>
           <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={analytics} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+              <BarChart data={analytics} margin={{ top: 8, right: 12, left: 8, bottom: 0 }}>
                 <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="label" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} width={38} />
+                <YAxis
+                  tick={{ fill: '#94a3b8', fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={52}
+                  tickFormatter={(value) => Number(value).toLocaleString()}
+                />
                 <Tooltip contentStyle={analyticsTooltipStyle} labelFormatter={(_, payload) => payload?.[0]?.payload?.dateLabel || ''} formatter={(value) => [`${value ?? 0} kcal`, 'Meal calories']} />
                 <Bar dataKey="calories" name="Meal calories" fill="#f59e0b" radius={[5, 5, 0, 0]} />
               </BarChart>
