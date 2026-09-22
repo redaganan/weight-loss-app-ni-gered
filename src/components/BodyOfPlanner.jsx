@@ -45,7 +45,7 @@ export default function BodyOfPlanner() {
         ...item,
         completed,
         missed,
-        status: completed ? 'Completed' : missed ? 'Missed' : (item.status || 'Planned'),
+        status: completed ? 'Completed' : missed ? 'Missed' : 'Planned',
       };
     });
   };
@@ -87,15 +87,48 @@ export default function BodyOfPlanner() {
       }
 
       try {
-        const { data } = await api.get(`/plan/${userId}`);
+        const [{ data }, historyResponse] = await Promise.all([
+          api.get(`/plan/${userId}`),
+          api.get(`/history/${userId}`),
+        ]);
         const nextPlan = data.weeklyRhythm || data.currentPlan?.weeklyRhythm || savedRhythm || defaultWeeklyPlan;
         const sourcePlan = Array.isArray(nextPlan) && nextPlan.length ? nextPlan : defaultWeeklyPlan;
-        const normalized = weekDates.map((date, index) => (
-          sourcePlan.find((item) => item.day?.toLowerCase() === date.day.toLowerCase())
-          || sourcePlan[index]
-          || defaultWeeklyPlan[index]
-        ));
-        setWeeklyPlan(applyAutomaticMissedStatus(normalized));
+        const plannerWorkoutDates = new Set(
+          (Array.isArray(historyResponse.data?.history) ? historyResponse.data.history : [])
+            .filter((entry) => entry.type === 'workout_log')
+            .map((entry) => {
+              const value = entry.payload?.scheduledDate || entry.createdAt;
+              return value
+                ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date(value))
+                : null;
+            })
+            .filter(Boolean),
+        );
+        let hadStaleCompletion = false;
+        const normalized = weekDates.map((date, index) => {
+          const item = sourcePlan.find((entry) => entry.day?.toLowerCase() === date.day.toLowerCase())
+            || sourcePlan[index]
+            || defaultWeeklyPlan[index];
+          if (item.completed && !plannerWorkoutDates.has(date.dateKey)) {
+            hadStaleCompletion = true;
+            return {
+              ...item,
+              completed: false,
+              missed: false,
+              status: 'Planned',
+              caloriesBurned: undefined,
+              completedRepetitions: undefined,
+              completedRest: undefined,
+              completedExerciseDetails: undefined,
+            };
+          }
+          return item;
+        });
+        const reconciledPlan = applyAutomaticMissedStatus(normalized);
+        setWeeklyPlan(reconciledPlan);
+        if (hadStaleCompletion) {
+          await persistPlan(reconciledPlan);
+        }
       } catch (error) {
         setWeeklyPlan(applyAutomaticMissedStatus(savedRhythm.length ? savedRhythm : defaultWeeklyPlan));
       }

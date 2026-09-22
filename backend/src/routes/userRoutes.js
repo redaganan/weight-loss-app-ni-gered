@@ -813,9 +813,9 @@ router.get('/plan/:userId', requireUserMatch, async (req, res) => {
         rest: day.rest,
         meal: day.meal,
         nutritionStrategy: day.nutritionStrategy,
-        status: day.status,
-        completed: day.completed,
-        missed: day.missed,
+        status: savedDay.status ?? day.status,
+        completed: savedDay.completed ?? day.completed,
+        missed: savedDay.missed ?? day.missed,
         completedRepetitions: savedDay.completedRepetitions,
         completedRest: savedDay.completedRest,
         completedExerciseDetails: savedDay.completedExerciseDetails,
@@ -1320,15 +1320,19 @@ router.delete('/workouts/:workoutId', async (req, res) => {
     if (!normalizedWorkout) return res.status(404).json({ message: 'Workout log not found.' });
 
     let weeklyRhythm;
-    if (normalizedWorkout.source === 'planner') {
-      const planDay = normalizedWorkout.planDay
+    if (normalizedWorkout.source === 'planner' || normalizedWorkout.planDay) {
+      const linkedPlanDay = normalizedWorkout.planDay
         ? await PlanDay.findById(normalizedWorkout.planDay).lean()
         : null;
       const profile = await UserProfile.findOne({ userAccount: userId });
 
-      if (profile && planDay?.day) {
+      if (profile) {
+        const scheduledDateKey = getManilaDateKey(normalizedWorkout.scheduledDate);
         const nextRhythm = (Array.isArray(profile.weeklyRhythm) ? profile.weeklyRhythm : []).map((item) => {
-          if (String(item.day).toLowerCase() !== String(planDay.day).toLowerCase()) {
+          const isTargetDay = linkedPlanDay
+            ? String(item.day).toLowerCase() === String(linkedPlanDay.day).toLowerCase()
+            : getPlannerDateKey(item.day) === scheduledDateKey;
+          if (!isTargetDay) {
             return item;
           }
 
@@ -1353,11 +1357,34 @@ router.delete('/workouts/:workoutId', async (req, res) => {
         };
         await profile.save();
 
-        await PlanDay.findByIdAndUpdate(normalizedWorkout.planDay, {
-          completed: false,
-          missed: Boolean(nextRhythm.find((item) => String(item.day).toLowerCase() === String(planDay.day).toLowerCase())?.missed),
-          status: nextRhythm.find((item) => String(item.day).toLowerCase() === String(planDay.day).toLowerCase())?.status || 'Planned',
-        });
+        const resetDay = nextRhythm.find((item) => (
+          linkedPlanDay
+            ? String(item.day).toLowerCase() === String(linkedPlanDay.day).toLowerCase()
+            : getPlannerDateKey(item.day) === scheduledDateKey
+        ));
+        const activePlan = await FitnessPlan.findOne({
+          userProfile: profile._id,
+          status: 'active',
+        }).sort({ version: -1 }).lean();
+        if (activePlan && resetDay) {
+          await PlanDay.findOneAndUpdate(
+            {
+              fitnessPlan: activePlan._id,
+              day: resetDay.day,
+            },
+            {
+              completed: false,
+              missed: Boolean(resetDay.missed),
+              status: resetDay.status || 'Planned',
+            },
+          );
+        } else if (normalizedWorkout.planDay && resetDay) {
+          await PlanDay.findByIdAndUpdate(normalizedWorkout.planDay, {
+            completed: false,
+            missed: Boolean(resetDay.missed),
+            status: resetDay.status || 'Planned',
+          });
+        }
       }
     }
 
@@ -1800,6 +1827,8 @@ router.get('/history/:userId', requireUserMatch, async (req, res) => {
         intensity: workout.intensity,
         caloriesBurned: workout.caloriesBurned,
         scheduledDate: workout.scheduledDate,
+        source: workout.source,
+        planDay: workout.planDay,
       },
       createdAt: workout.createdAt || workout.scheduledDate,
     }));
